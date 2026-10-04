@@ -1,0 +1,13 @@
+# 任一 OpenAI 兼容服务均可,复制为 .dev.vars 后填写:
+#   OpenAI  : https://api.openai.com/v1                模型如 gpt-4o-mini
+#   DeepSeek: https://api.deepseek.com/v1              模型如 deepseek-chat
+#   GLM     : https://open.bigmodel.cn/api/paas/v4     模型如 glm-4-flash
+LLM_BASE_URL=https://api.deepseek.com/v1
+LLM_API_KEY=sk-your-key
+LLM_MODEL=deepseek-chat
+# 可选:思考型模型(如 GLM 5.x,始终思考且较慢)的思维链控制,JSON 原样透传:
+#LLM_THINKING={"type":"enabled","effort":"low"}
+# GLM 追求速度的组合(零思考,首字 ~1s):
+#LLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4
+#LLM_MODEL=glm-4.5-air
+#LLM_THINKING={"type":"disabled"}

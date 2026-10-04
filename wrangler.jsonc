@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "forge",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-05-05",
+  // 静态资源:构建产物在 web/dist,未命中文件的请求(/api/*、/s/*、SPA 路由)进入 Worker
+  "assets": {
+    "directory": "./web/dist",
+    "binding": "ASSETS"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "forge",
+      // 本地开发不需要真实 id;部署前执行 `wrangler d1 create forge` 并替换
+      "database_id": "ee014248-414c-4789-a51c-0f8a133621ce"
+    }
+  ]
+}

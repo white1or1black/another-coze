@@ -1,0 +1,22 @@
+{
+  "name": "forge",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "mkdir -p web/dist && ([ -f web/dist/index.html ] || printf '<!doctype html><title>Forge</title>' > web/dist/index.html) && wrangler dev",
+    "dev:web": "npm --prefix web run dev",
+    "build": "npm --prefix web run build",
+    "deploy": "npm run build && wrangler deploy",
+    "typecheck": "tsc --noEmit && npm --prefix web run typecheck",
+    "db:init:local": "wrangler d1 execute DB --local --file=schema.sql",
+    "db:init:remote": "wrangler d1 execute DB --remote --file=schema.sql"
+  },
+  "dependencies": {
+    "hono": "^4.7.6"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260926.1",
+    "typescript": "^5.8.3",
+    "wrangler": "^4.14.4"
+  }
+}
