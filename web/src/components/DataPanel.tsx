@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../lib/api'
-import type { SiteCollection, SiteDataItem } from '../lib/types'
+import type { SiteCollection, SiteDataEnv, SiteDataItem } from '../lib/types'
 
-/** 站点数据面板:查看/管理生成页面通过平台数据接口收集的访问者数据 */
+/**
+ * 站点数据面板:查看/管理生成页面通过平台数据接口收集的访问者数据。
+ * 数据按环境隔离:草稿(编辑器预览产生)与线上(发布后访客产生)互不可见,分开管理。
+ */
 export default function DataPanel({ projectId }: { projectId: string }) {
+  const [env, setEnv] = useState<SiteDataEnv>('live')
   const [collections, setCollections] = useState<SiteCollection[]>([])
   const [selected, setSelected] = useState<string | null>(null)
   const [items, setItems] = useState<SiteDataItem[]>([])
@@ -16,7 +20,6 @@ export default function DataPanel({ projectId }: { projectId: string }) {
     try {
       const data = await api<{ collections: SiteCollection[] }>(`/api/projects/${projectId}/data`)
       setCollections(data.collections)
-      // 当前选中的集合若已不存在(被清空后列表仍可能显示 0 行,不清空选择),保持界面稳定
     } catch (err) {
       setError((err as Error).message)
     } finally {
@@ -24,26 +27,37 @@ export default function DataPanel({ projectId }: { projectId: string }) {
     }
   }, [projectId])
 
-  const openCollection = useCallback(async (name: string) => {
-    setSelected(name)
-    setError('')
-    try {
-      const data = await api<{ items: SiteDataItem[] }>(`/api/projects/${projectId}/data/${name}`)
-      setItems(data.items)
-    } catch (err) {
-      setItems([])
-      setError((err as Error).message)
-    }
-  }, [projectId])
+  const openCollection = useCallback(
+    async (name: string) => {
+      setSelected(name)
+      setError('')
+      try {
+        const data = await api<{ items: SiteDataItem[] }>(`/api/projects/${projectId}/data/${env}/${name}`)
+        setItems(data.items)
+      } catch (err) {
+        setItems([])
+        setError((err as Error).message)
+      }
+    },
+    [projectId, env]
+  )
 
   useEffect(() => {
     loadCollections()
   }, [loadCollections])
 
+  // 切换环境:清空当前选中,回到集合列表
+  useEffect(() => {
+    setSelected(null)
+    setItems([])
+  }, [env])
+
+  const envCollections = collections.filter((c) => c.env === env)
+
   async function deleteRow(rowId: string) {
     if (!selected || !confirm('删除这条数据?')) return
     try {
-      await api(`/api/projects/${projectId}/data/${selected}/${rowId}`, { method: 'DELETE' })
+      await api(`/api/projects/${projectId}/data/${env}/${selected}/${rowId}`, { method: 'DELETE' })
       setItems((list) => list.filter((i) => i.id !== rowId))
       loadCollections()
     } catch (err) {
@@ -52,9 +66,9 @@ export default function DataPanel({ projectId }: { projectId: string }) {
   }
 
   async function clearCollection() {
-    if (!selected || !confirm(`清空「${selected}」的全部数据?此操作不可恢复。`)) return
+    if (!selected || !confirm(`清空「${selected}」在该环境下的全部数据?此操作不可恢复。`)) return
     try {
-      await api(`/api/projects/${projectId}/data/${selected}`, { method: 'DELETE' })
+      await api(`/api/projects/${projectId}/data/${env}/${selected}`, { method: 'DELETE' })
       setItems([])
       loadCollections()
     } catch (err) {
@@ -66,19 +80,44 @@ export default function DataPanel({ projectId }: { projectId: string }) {
 
   return (
     <div className="mx-auto max-w-3xl p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <div className="flex rounded-lg border border-gray-700 p-0.5 text-xs">
+          {(
+            [
+              ['draft', '草稿(预览测试)'],
+              ['live', '线上(发布后)'],
+            ] as const
+          ).map(([e, label]) => (
+            <button
+              key={e}
+              onClick={() => setEnv(e)}
+              className={`rounded-md px-3 py-1.5 ${env === e ? 'bg-gray-700 text-white' : 'text-gray-400 hover:text-gray-200'}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <span className="text-xs text-gray-600">
+          {env === 'draft' ? '编辑器预览里提交的数据' : '发布后访客在公开页提交的数据'}
+        </span>
+      </div>
       {error && <div className="mb-3 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-400">{error}</div>}
 
-      {collections.length === 0 ? (
+      {envCollections.length === 0 ? (
         <div className="rounded-xl border border-dashed border-gray-700 p-8 text-center text-sm text-gray-500">
-          暂无站点数据
-          <div className="mt-1 text-xs text-gray-600">当页面调用平台数据接口(如留言板、报名表)后,访问者提交的数据会出现在这里</div>
+          该环境下暂无数据
+          <div className="mt-1 text-xs text-gray-600">
+            {env === 'draft'
+              ? '在预览里与页面交互(如提交留言)后,数据会出现在这里,不会影响线上'
+              : '发布后,访客在公开页提交的数据会出现在这里'}
+          </div>
         </div>
       ) : (
         <div className="flex gap-4">
           <div className="w-48 shrink-0 space-y-1">
-            {collections.map((col) => (
+            {envCollections.map((col) => (
               <button
-                key={col.collection}
+                key={`${col.env}/${col.collection}`}
                 onClick={() => openCollection(col.collection)}
                 className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-sm ${
                   selected === col.collection ? 'bg-gray-800 text-white' : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'

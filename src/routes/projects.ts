@@ -100,26 +100,34 @@ app.post('/:id/publish', async (c) => {
   return c.json({ slug: project.slug, url })
 })
 
-// ---------- 站点数据管理:查看/清理生成页面收集的访问者数据 ----------
+// ---------- 站点数据管理:查看/清理生成页面收集的访问者数据(草稿/线上两个环境) ----------
 
-/** 各数据集合及行数 */
+const DATA_ENV_RE = /^(draft|live)$/
+
+/** 各数据集合及行数(按环境分组) */
 app.get('/:id/data', async (c) => {
   const project = await ownedProject(c, c.req.param('id'))
   if (!project) return c.json({ error: '项目不存在' }, 404)
   const { results } = await c.env.DB
-    .prepare('SELECT collection, COUNT(*) AS count FROM site_data WHERE project_id = ? GROUP BY collection ORDER BY collection')
+    .prepare(
+      'SELECT env, collection, COUNT(*) AS count FROM site_data WHERE project_id = ? GROUP BY env, collection ORDER BY env, collection'
+    )
     .bind(project.id)
-    .all<{ collection: string; count: number }>()
+    .all<{ env: string; collection: string; count: number }>()
   return c.json({ collections: results })
 })
 
-/** 某集合的行(最新 200 条) */
-app.get('/:id/data/:collection', async (c) => {
+/** 某环境下某集合的行(最新 200 条) */
+app.get('/:id/data/:env/:collection', async (c) => {
   const project = await ownedProject(c, c.req.param('id'))
   if (!project) return c.json({ error: '项目不存在' }, 404)
+  const env = c.req.param('env')
+  if (!DATA_ENV_RE.test(env)) return c.json({ error: '参数不合法' }, 400)
   const { results } = await c.env.DB
-    .prepare('SELECT id, data, created_at FROM site_data WHERE project_id = ? AND collection = ? ORDER BY rowid DESC LIMIT 200')
-    .bind(project.id, c.req.param('collection'))
+    .prepare(
+      'SELECT id, data, created_at FROM site_data WHERE project_id = ? AND env = ? AND collection = ? ORDER BY rowid DESC LIMIT 200'
+    )
+    .bind(project.id, env, c.req.param('collection'))
     .all<{ id: string; data: string; created_at: string }>()
   return c.json({
     items: results.map((r) => {
@@ -134,24 +142,28 @@ app.get('/:id/data/:collection', async (c) => {
   })
 })
 
-/** 清空集合 */
-app.delete('/:id/data/:collection', async (c) => {
+/** 清空某环境下的集合 */
+app.delete('/:id/data/:env/:collection', async (c) => {
   const project = await ownedProject(c, c.req.param('id'))
   if (!project) return c.json({ error: '项目不存在' }, 404)
+  const env = c.req.param('env')
+  if (!DATA_ENV_RE.test(env)) return c.json({ error: '参数不合法' }, 400)
   await c.env.DB
-    .prepare('DELETE FROM site_data WHERE project_id = ? AND collection = ?')
-    .bind(project.id, c.req.param('collection'))
+    .prepare('DELETE FROM site_data WHERE project_id = ? AND env = ? AND collection = ?')
+    .bind(project.id, env, c.req.param('collection'))
     .run()
   return c.json({ ok: true })
 })
 
 /** 删除单行 */
-app.delete('/:id/data/:collection/:rowId', async (c) => {
+app.delete('/:id/data/:env/:collection/:rowId', async (c) => {
   const project = await ownedProject(c, c.req.param('id'))
   if (!project) return c.json({ error: '项目不存在' }, 404)
+  const env = c.req.param('env')
+  if (!DATA_ENV_RE.test(env)) return c.json({ error: '参数不合法' }, 400)
   await c.env.DB
-    .prepare('DELETE FROM site_data WHERE id = ? AND project_id = ? AND collection = ?')
-    .bind(c.req.param('rowId'), project.id, c.req.param('collection'))
+    .prepare('DELETE FROM site_data WHERE id = ? AND project_id = ? AND env = ? AND collection = ?')
+    .bind(c.req.param('rowId'), project.id, env, c.req.param('collection'))
     .run()
   return c.json({ ok: true })
 })

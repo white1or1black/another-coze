@@ -36,7 +36,10 @@ export interface ProjectDetail {
 }
 
 /** 站点数据(生成页面通过平台数据接口收集的访问者数据) */
+export type SiteDataEnv = 'draft' | 'live'
+
 export interface SiteCollection {
+  env: SiteDataEnv
   collection: string
   count: number
 }

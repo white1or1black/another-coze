@@ -17,8 +17,9 @@ export default function PreviewPane({ html, streaming, progressText, project, on
   const published = project?.status === 'published'
   const publicUrl = project ? `${location.origin}/s/${project.slug}` : ''
   // 预览 iframe 是 srcDoc opaque origin,数据接口占位符替换为绝对地址指向宿主 origin;
-  // 存储的 HTML 保留占位符(origin 无关),发布服务端会再做一次替换
-  const previewHtml = html && project ? html.split('__FORGE_API__').join(`${location.origin}/api/site/${project.slug}`) : html
+  // /draft 环境段:预览中提交的数据进草稿库,与发布后访客产生的线上数据隔离;
+  // 存储的 HTML 保留占位符(origin 与环境无关),发布服务端会替换为 /live
+  const previewHtml = html && project ? html.split('__FORGE_API__').join(`${location.origin}/api/site/${project.slug}/draft`) : html
 
   return (
     <section className="flex min-w-0 flex-1 flex-col bg-gray-900">

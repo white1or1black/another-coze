@@ -4,6 +4,7 @@ import type { AppEnv } from '../types'
 
 /**
  * 公开站点数据 API:生成页面通过它存取访问者提交的数据(Cloudflare BaaS 存储层)。
+ * 路径中的 :env 是数据环境:draft = 编辑器预览产生,live = 发布后访客产生,两套互不可见。
  * 页面运行在 CSP sandbox 的 opaque origin(Origin: null),故响应必须带 ACAO:*;
  * 接口不读 session cookie,与主站鉴权完全隔离,滥用靠大小/行数/限流三重上限约束。
  */
@@ -21,6 +22,7 @@ const RATE_LIMIT_WINDOW_SQL = "created_at > datetime('now', '-60 seconds')"
 
 const SLUG_RE = /^[a-z0-9]{4,16}$/
 const COLLECTION_RE = /^[a-z][a-z0-9_-]{0,31}$/
+const ENV_RE = /^(draft|live)$/
 
 function cors(body: unknown, status = 200): Response {
   return Response.json(body, { status, headers: CORS_HEADERS })
@@ -28,24 +30,27 @@ function cors(body: unknown, status = 200): Response {
 
 const app = new Hono<AppEnv>()
 
-app.options('/:slug/:collection', (c) => new Response(null, { status: 204, headers: CORS_HEADERS }))
+app.options('/:slug/:env/:collection', (c) => new Response(null, { status: 204, headers: CORS_HEADERS }))
 
 async function projectBySlug(c: Context<AppEnv>, slug: string): Promise<{ id: string } | null> {
   return c.env.DB.prepare('SELECT id FROM projects WHERE slug = ?').bind(slug).first<{ id: string }>()
 }
 
 /** 读取集合:最新 100 条,新在前 */
-app.get('/:slug/:collection', async (c) => {
+app.get('/:slug/:env/:collection', async (c) => {
   const slug = c.req.param('slug')
+  const env = c.req.param('env')
   const collection = c.req.param('collection')
-  if (!SLUG_RE.test(slug) || !COLLECTION_RE.test(collection)) return cors({ error: '参数不合法' }, 400)
+  if (!SLUG_RE.test(slug) || !ENV_RE.test(env) || !COLLECTION_RE.test(collection)) return cors({ error: '参数不合法' }, 400)
 
   const project = await projectBySlug(c, slug)
   if (!project) return cors({ error: '站点不存在' }, 404)
 
   const { results } = await c.env.DB
-    .prepare('SELECT id, data, created_at FROM site_data WHERE project_id = ? AND collection = ? ORDER BY rowid DESC LIMIT 100')
-    .bind(project.id, collection)
+    .prepare(
+      'SELECT id, data, created_at FROM site_data WHERE project_id = ? AND env = ? AND collection = ? ORDER BY rowid DESC LIMIT 100'
+    )
+    .bind(project.id, env, collection)
     .all<{ id: string; data: string; created_at: string }>()
 
   const items = results.map((r) => {
@@ -61,10 +66,11 @@ app.get('/:slug/:collection', async (c) => {
 })
 
 /** 写入集合:任意 JSON 对象,受大小/行数/频率三重上限约束 */
-app.post('/:slug/:collection', async (c) => {
+app.post('/:slug/:env/:collection', async (c) => {
   const slug = c.req.param('slug')
+  const env = c.req.param('env')
   const collection = c.req.param('collection')
-  if (!SLUG_RE.test(slug) || !COLLECTION_RE.test(collection)) return cors({ error: '参数不合法' }, 400)
+  if (!SLUG_RE.test(slug) || !ENV_RE.test(env) || !COLLECTION_RE.test(collection)) return cors({ error: '参数不合法' }, 400)
 
   const project = await projectBySlug(c, slug)
   if (!project) return cors({ error: '站点不存在' }, 404)
@@ -89,15 +95,15 @@ app.post('/:slug/:collection', async (c) => {
   if ((limited?.n ?? 0) >= RATE_LIMIT_WRITES) return cors({ error: '提交太频繁,请稍后再试' }, 429)
 
   const total = await c.env.DB
-    .prepare('SELECT COUNT(*) AS n FROM site_data WHERE project_id = ? AND collection = ?')
-    .bind(project.id, collection)
+    .prepare('SELECT COUNT(*) AS n FROM site_data WHERE project_id = ? AND env = ? AND collection = ?')
+    .bind(project.id, env, collection)
     .first<{ n: number }>()
   if ((total?.n ?? 0) >= MAX_ROWS_PER_COLLECTION) return cors({ error: '该站点数据已满' }, 409)
 
   const id = crypto.randomUUID()
   await c.env.DB
-    .prepare('INSERT INTO site_data (id, project_id, collection, data, client_ip) VALUES (?, ?, ?, ?, ?)')
-    .bind(id, project.id, collection, JSON.stringify(body), ip)
+    .prepare('INSERT INTO site_data (id, project_id, env, collection, data, client_ip) VALUES (?, ?, ?, ?, ?, ?)')
+    .bind(id, project.id, env, collection, JSON.stringify(body), ip)
     .run()
   return cors({ id }, 201)
 })

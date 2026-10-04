@@ -23,8 +23,8 @@ app.get('/s/:slug', async (c) => {
     .bind(c.req.param('slug'))
     .first<{ html: string }>()
   if (!row) return c.text('404 Not Found', 404)
-  // 页面里的 __FORGE_API__ 是站点数据接口占位符;相对路径跟随当前域名,存储的 HTML 保持 origin 无关
-  const html = row.html.split('__FORGE_API__').join(`/api/site/${c.req.param('slug')}`)
+  // 页面里的 __FORGE_API__ 是站点数据接口占位符;/live 环境段:发布后页面读写线上数据,与编辑器预览的草稿数据隔离
+  const html = row.html.split('__FORGE_API__').join(`/api/site/${c.req.param('slug')}/live`)
   return new Response(html, {
     headers: {
       'Content-Type': 'text/html; charset=utf-8',

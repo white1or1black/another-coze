@@ -42,10 +42,12 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- 站点运行数据:生成页面通过 /api/site/:slug/:collection 读写,Cloudflare BaaS 的存储层
+-- 站点运行数据:生成页面通过 /api/site/:slug/:env/:collection 读写,Cloudflare BaaS 的存储层
+-- env = 'draft'(编辑器预览产生) / 'live'(发布后访客产生),两套数据互不可见
 CREATE TABLE IF NOT EXISTS site_data (
   id          TEXT PRIMARY KEY,
   project_id  TEXT NOT NULL REFERENCES projects(id),
+  env         TEXT NOT NULL DEFAULT 'live',
   collection  TEXT NOT NULL,
   data        TEXT NOT NULL,
   client_ip   TEXT NOT NULL DEFAULT '',
