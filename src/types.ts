@@ -53,8 +53,8 @@ export interface Plan {
   name: string
   tagline: string
   palette: string[]
-  /** 计划项;done 由工作流在对应项生成完成后回填,前端渲染勾选状态 */
-  sections: { title: string; summary: string; done?: boolean }[]
+  /** 计划项;done/error 由工作流回填(降级的项 error=true,页面内为占位块) */
+  sections: { title: string; summary: string; done?: boolean; error?: boolean }[]
 }
 
 /** 生成工作流入参:instance id 即 jobs.id */

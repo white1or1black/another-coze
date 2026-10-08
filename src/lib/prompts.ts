@@ -156,3 +156,14 @@ export function stripFence(text: string): string {
   const m = text.match(/```[a-zA-Z]*\s*\n([\s\S]*?)\n?```/)
   return (m ? m[1] : text).trim()
 }
+
+/** 计划项重试耗尽后的降级占位块:页面照常交付,用户可在对话中要求补全 */
+export function fallbackSectionHtml(title: string, palette: string[]): string {
+  const accent = palette[2] ?? palette[0] ?? '#6366f1'
+  return `<section class="py-20 px-6">
+  <div class="mx-auto max-w-3xl rounded-2xl border p-10 text-center" style="border-color:${accent}33;background:${accent}0d;">
+    <h2 class="text-2xl font-bold mb-3">${title}</h2>
+    <p class="text-sm opacity-70">该板块生成时模型服务暂时不可用。你可以在左侧对话中输入「重新生成${title}」,补全这一部分。</p>
+  </div>
+</section>`
+}

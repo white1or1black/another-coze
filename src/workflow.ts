@@ -6,6 +6,7 @@ import { insertMessage } from './lib/jobHelpers'
 import {
   MAX_SEGMENTS,
   extractHtml,
+  fallbackSectionHtml,
   parsePlan,
   planMessages,
   reviseMessages,
@@ -22,8 +23,8 @@ import {
 const SEGMENT_TIMEOUT_MS = 600_000
 /** chat 修改是整页重写,无法分段,保留长超时(网关长请求风险由 workflow 层重试兜底) */
 const REWRITE_TIMEOUT_MS = 600_000
-/** LLM 步骤失败后的自动重试:吸收网关瞬时 5xx/断流;次数收紧(1 次),避免超时叠加成小时级等待 */
-const LLM_STEP_RETRIES = { limit: 1, delay: 8, backoff: 'exponential' } as const
+/** LLM 步骤失败后的自动重试:间隔 20s/40s,跨过网关的短暂「坏窗口」而不是几秒内连撞三次 */
+const LLM_STEP_RETRIES = { limit: 2, delay: 20, backoff: 'exponential' } as const
 // 注意:勿对分段调用强行禁用思考——「始终思考」型模型(如 glm-5.3-flash)不支持 disabled,
 // 会返回 400 code 1210(只接受 low/high/max);思维链开销走环境变量 LLM_THINKING 控制
 
@@ -67,6 +68,7 @@ export class GenerationWorkflow extends WorkflowEntrypoint<Env, GenerationParams
 
     let html: string
     let plan: Plan | null = null
+    let failedNote = ''
     if (job.type === 'generate') {
       // 阶段 1:规划(结果落库,前端轮询即可展示规划卡片)
       const genPlan = await step.do(
@@ -112,46 +114,56 @@ export class GenerationWorkflow extends WorkflowEntrypoint<Env, GenerationParams
       // 第 4 个并行请求被饿到 17 分钟超时),串行反而更快更稳;每个计划项独立 checkpoint,
       // 任一失败只重试该项,进度精确到「第几项 + 名称」,完成即回填勾选到 plan_json
       const sections = genPlan.sections.slice(0, MAX_SEGMENTS)
-      const filled: string[] = []
+      const results: { html: string; ok: boolean }[] = []
+      const failedTitles: string[] = []
       for (let i = 0; i < sections.length; i++) {
-        const seg = await step.do(
-          `section-${i}`,
-          { retries: LLM_STEP_RETRIES },
-          async () => {
-            await setProgress(`正在生成「${sections[i].title}」(${i + 1}/${sections.length})`)
-            const out = stripFence(
-              await chatOnce(this.env, sectionMessages(prompt, genPlan, i), SEGMENT_TIMEOUT_MS),
-            )
-            if (!out.includes('<')) throw new Error(`「${sections[i].title}」未返回有效内容,请重试`)
-            // 勾选计划卡片 + 半成品页面上屏:该项标记完成,已完成的片段拼进 html_preview
-            const htmlSoFar = [...filled, out].reduce(
-              (acc, s, j) => acc.replace(sectionPlaceholder(j), `\n${s}\n`),
-              shell,
-            )
-            await db
-              .prepare(`UPDATE jobs SET plan_json = ?, html_preview = ?, updated_at = datetime('now') WHERE id = ?`)
-              .bind(
-                JSON.stringify({
-                  ...genPlan,
-                  sections: genPlan.sections.map((s, j) => (j <= i ? { ...s, done: true } : s)),
-                }),
-                htmlSoFar,
-                jobId,
+        let ok = true
+        let out = ''
+        try {
+          out = await step.do(
+            `section-${i}`,
+            { retries: LLM_STEP_RETRIES },
+            async () => {
+              await setProgress(`正在生成「${sections[i].title}」(${i + 1}/${sections.length})`)
+              const seg = stripFence(
+                await chatOnce(this.env, sectionMessages(prompt, genPlan, i), SEGMENT_TIMEOUT_MS),
               )
-              .run()
-            return out
-          },
+              if (!seg.includes('<')) throw new Error(`「${sections[i].title}」未返回有效内容,请重试`)
+              return seg
+            },
+          )
+        } catch (err) {
+          // 网关持续不可用:该计划项以占位块降级,不拖垮整个页面(卡片标 ✗,可对话补全)
+          const msg = err instanceof Error ? err.message : '生成失败'
+          log(`section-${i} FAILED: ${msg}`)
+          ok = false
+          failedTitles.push(sections[i].title)
+          out = fallbackSectionHtml(sections[i].title, genPlan.palette)
+        }
+        results.push({ html: out, ok })
+        // 勾选/标记 + 半成品页面上屏
+        const htmlSoFar = results.reduce(
+          (acc, r, j) => acc.replace(sectionPlaceholder(j), `\n${r.html}\n`),
+          shell,
         )
-        filled.push(seg)
-        log(`section-${i} done`)
+        await db
+          .prepare(`UPDATE jobs SET plan_json = ?, html_preview = ?, updated_at = datetime('now') WHERE id = ?`)
+          .bind(
+            JSON.stringify({
+              ...genPlan,
+              sections: genPlan.sections.map((s, j) =>
+                j < results.length ? { ...s, done: results[j].ok, error: !results[j].ok } : s,
+              ),
+            }),
+            htmlSoFar,
+            jobId,
+          )
+          .run()
+        log(`section-${i} ${ok ? 'done' : 'degraded'}`)
       }
-      log(`sections done: ${filled.length}`)
-
-      // 组装:章节片段替换进骨架占位符
-      html = shell
-      filled.forEach((seg, i) => {
-        html = html.replace(sectionPlaceholder(i), `\n${seg}\n`)
-      })
+      html = results.reduce((acc, r, j) => acc.replace(sectionPlaceholder(j), `\n${r.html}\n`), shell)
+      failedNote = failedTitles.length ? `(${failedTitles.length} 个板块生成失败:${failedTitles.join('、')},可在对话中要求补全)` : ''
+      log(`sections done: ${results.length}, failed: ${failedTitles.length}`)
     } else {
       // chat 修改:整页重写,单步完成(无法安全切分任意 HTML)
       html = await step.do(
@@ -214,9 +226,9 @@ export class GenerationWorkflow extends WorkflowEntrypoint<Env, GenerationParams
       if (!claim.meta.changes) return 'already-settled'
       const name = plan?.name ?? ''
       const assistantText =
-        job.type === 'generate'
+        (job.type === 'generate'
           ? `已完成「${name || '网站'}」初版生成(v${version})`
-          : `已按「${prompt.slice(0, 30)}」更新至 v${version}`
+          : `已按「${prompt.slice(0, 30)}」更新至 v${version}`) + failedNote
       await insertMessage(db, job.project_id, 'assistant', assistantText)
       // 成功才扣积分;失败/被巡检判死路径不扣
       await deductCredit(db, job.user_id)

@@ -26,8 +26,8 @@ export interface Plan {
   name: string
   tagline: string
   palette: string[]
-  /** 计划项;done 由后端生成完成后回填,卡片实时勾选 */
-  sections: { title: string; summary: string; done?: boolean }[]
+  /** 计划项;done/error 由后端回填,卡片实时渲染勾选与失败标记 */
+  sections: { title: string; summary: string; done?: boolean; error?: boolean }[]
 }
 
 /** 后台生成任务的状态快照(轮询/SSE 响应体,与服务端 jobSnapshot 对应) */
