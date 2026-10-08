@@ -103,7 +103,12 @@ export async function getJob(jobId: string): Promise<JobSnapshot | null> {
   return data.job
 }
 
-export async function getActiveJob(projectId: string): Promise<JobSnapshot | null> {
-  const data = await api<{ job: JobSnapshot | null }>(`/api/projects/${projectId}/job/active`)
-  return data.job
+/** 活动任务(接管轮询)+ 可续任务(最近一次失败但有产物的任务,继续对话即续跑) */
+export async function getActiveJob(
+  projectId: string
+): Promise<{ job: JobSnapshot | null; resume: JobSnapshot | null }> {
+  const data = await api<{ job: JobSnapshot | null; resume: JobSnapshot | null }>(
+    `/api/projects/${projectId}/job/active`,
+  )
+  return { job: data.job ?? null, resume: data.resume ?? null }
 }

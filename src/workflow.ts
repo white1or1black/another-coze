@@ -63,8 +63,11 @@ export class GenerationWorkflow extends WorkflowEntrypoint<Env, GenerationParams
     })
     log(`start type=${job.type}`)
 
-    const payload = JSON.parse(job.payload) as { idea?: string; message?: string }
+    const payload = JSON.parse(job.payload) as { idea?: string; message?: string; note?: string }
     const prompt = String(payload.idea ?? payload.message ?? '')
+    // 失败续聊的补充要求:拼进喂给模型的想法里(断点复用匹配仍用原始 prompt,不受影响)
+    const note = String(payload.note ?? '').trim()
+    const effPrompt = note ? `${prompt}\n\n用户补充要求(务必落实):${note}` : prompt
 
     let html: string
     let plan: Plan | null = null
@@ -109,7 +112,7 @@ export class GenerationWorkflow extends WorkflowEntrypoint<Env, GenerationParams
             return prior.plan
           }
           await setProgress('正在规划方案')
-          return chatOnce(this.env, planMessages(prompt)).then((t) => parsePlan(t, prompt))
+          return chatOnce(this.env, planMessages(effPrompt)).then((t) => parsePlan(t, prompt))
         },
       )
       plan = genPlan
@@ -127,7 +130,7 @@ export class GenerationWorkflow extends WorkflowEntrypoint<Env, GenerationParams
         { retries: LLM_STEP_RETRIES },
         async () => {
           if (prior) return prior.artifacts.shell
-          const doc = extractHtml(await chatOnce(this.env, shellMessages(prompt, genPlan), SEGMENT_TIMEOUT_MS))
+          const doc = extractHtml(await chatOnce(this.env, shellMessages(effPrompt, genPlan), SEGMENT_TIMEOUT_MS))
           const missing = genPlan.sections
             .slice(0, MAX_SEGMENTS)
             .map((_, i) => i)
@@ -169,7 +172,7 @@ export class GenerationWorkflow extends WorkflowEntrypoint<Env, GenerationParams
               }
               await setProgress(`正在生成「${sections[i].title}」(${i + 1}/${sections.length})`)
               const seg = stripFence(
-                await chatOnce(this.env, sectionMessages(prompt, genPlan, i), SEGMENT_TIMEOUT_MS),
+                await chatOnce(this.env, sectionMessages(effPrompt, genPlan, i), SEGMENT_TIMEOUT_MS),
               )
               if (!seg.includes('<')) throw new Error(`「${sections[i].title}」未返回有效内容,请重试`)
               return seg

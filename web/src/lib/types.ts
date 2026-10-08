@@ -38,6 +38,8 @@ export interface JobSnapshot {
   stage: 'planning' | 'coding'
   /** 人读的分段进度(如「正在生成「关于我」(2/5)」),无则回退到按 stage 推导的文案 */
   progress: string | null
+  /** 原始想法(generate 任务);失败续聊时作为继续的锚点 */
+  idea: string | null
   /** 生成中的半成品页面(骨架+已完成计划项),流式预览用;终态后以详情接口的 html 为准 */
   html_preview: string | null
   plan: Plan | null

@@ -21,7 +21,7 @@ export async function insertMessage(
 }
 
 const SNAPSHOT_COLUMNS =
-  'id, user_id, type, status, stage, progress, html_preview, plan_json, error, result_version, started_at'
+  "id, user_id, type, status, stage, progress, html_preview, plan_json, error, result_version, started_at, json_extract(payload, '$.idea') AS idea"
 
 interface SnapshotRow {
   id: string
@@ -35,6 +35,7 @@ interface SnapshotRow {
   error: string | null
   result_version: number | null
   started_at: string | null
+  idea: string | null
 }
 
 function snapshotFromRow(row: SnapshotRow) {
@@ -45,6 +46,7 @@ function snapshotFromRow(row: SnapshotRow) {
     stage: row.stage,
     progress: row.progress,
     html_preview: row.html_preview,
+    idea: row.idea,
     plan: row.plan_json ? (JSON.parse(row.plan_json) as unknown) : null,
     error: row.error,
     version: row.result_version,
@@ -73,6 +75,20 @@ export async function activeJobSnapshot(db: D1Database, projectId: string, userI
       `SELECT ${SNAPSHOT_COLUMNS} FROM jobs WHERE project_id = ? AND ${ACTIVE_STATUS_SQL}
        AND EXISTS (SELECT 1 FROM projects WHERE projects.id = jobs.project_id AND projects.user_id = ?)
        ORDER BY updated_at DESC LIMIT 1`
+    )
+    .bind(projectId, userId)
+    .first<SnapshotRow>()
+  return row ? snapshotFromRow(row) : null
+}
+
+/** 项目最近一次失败但留有产物的任务快照(失败后续聊:继续对话即续跑该任务);无则返回 null */
+export async function resumableJobSnapshot(db: D1Database, projectId: string, userId: string) {
+  const row = await db
+    .prepare(
+      `SELECT ${SNAPSHOT_COLUMNS} FROM jobs
+       WHERE project_id = ? AND status = 'failed' AND sections_json IS NOT NULL
+         AND EXISTS (SELECT 1 FROM projects WHERE projects.id = jobs.project_id AND projects.user_id = ?)
+       ORDER BY created_at DESC LIMIT 1`
     )
     .bind(projectId, userId)
     .first<SnapshotRow>()

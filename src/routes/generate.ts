@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import type { Context } from 'hono'
 import type { AppEnv, ProjectRow } from '../types'
 import { requireUser } from '../lib/auth'
-import { assertCredits, activeJobSnapshot, insertMessage } from '../lib/jobHelpers'
+import { assertCredits, activeJobSnapshot, insertMessage, resumableJobSnapshot } from '../lib/jobHelpers'
 import { type JobType, createJob } from '../lib/jobs'
 
 const app = new Hono<AppEnv>()
@@ -51,12 +51,14 @@ app.post('/:id/generate', async (c) => {
   const project = await ownedProject(c, c.req.param('id'))
   if (!project) return c.json({ error: '项目不存在' }, 404)
 
-  const body = await c.req.json<{ idea?: string }>().catch(() => ({}) as { idea?: string })
+  const body = await c.req.json<{ idea?: string; note?: string }>().catch(() => ({}) as { idea?: string; note?: string })
   const idea = String(body.idea ?? '').trim()
   if (!idea) return c.json({ error: '想法不能为空' }, 400)
+  // note:失败后续聊的补充要求(如「重试定价方案」),随工作流注入各段生成,不参与断点复用的匹配
+  const note = String(body.note ?? '').trim()
   if (!(await assertCredits(c.env.DB, user.id))) return c.json({ error: '积分不足,无法生成' }, 402)
 
-  return launchJob(c, project, 'generate', { idea }, idea)
+  return launchJob(c, project, 'generate', note ? { idea, note } : { idea }, idea)
 })
 
 /** 对话式迭代修改:同样走后台任务 */
@@ -79,10 +81,13 @@ app.post('/:id/chat', async (c) => {
   return launchJob(c, project, 'chat', { message }, message)
 })
 
-/** 断线/刷新恢复:查询项目当前未完成的任务(无则返回 null,前端停止轮询) */
+/** 断线/刷新恢复:活动任务(接管轮询)+ 可续任务(失败但有产物,继续对话即续跑) */
 app.get('/:id/job/active', async (c) => {
-  const job = await activeJobSnapshot(c.env.DB, c.req.param('id'), c.get('user').id)
-  return c.json({ job })
+  const [job, resume] = await Promise.all([
+    activeJobSnapshot(c.env.DB, c.req.param('id'), c.get('user').id),
+    resumableJobSnapshot(c.env.DB, c.req.param('id'), c.get('user').id),
+  ])
+  return c.json({ job, resume })
 })
 
 export const generateRoutes = app

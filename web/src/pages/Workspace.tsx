@@ -18,6 +18,7 @@ export default function Workspace() {
   const [plan, setPlan] = useState<Plan | null>(null)
   const [job, setJob] = useState<JobSnapshot | null>(null)
   const [error, setError] = useState('')
+  const [resumeIdea, setResumeIdea] = useState<string | null>(null)
   const started = useRef(false)
 
   const streaming = !!job && (job.status === 'pending' || job.status === 'running')
@@ -45,9 +46,12 @@ export default function Workspace() {
       if (settled.current.has(finished.id)) return
       settled.current.add(finished.id)
       if (finished.status === 'failed') {
+        // 失败但有产物:记下原想法,后续消息作为补充要求继续该任务
+        if (finished.idea) setResumeIdea(finished.idea)
         setError(finished.error ?? '生成失败,请重试')
         return
       }
+      setResumeIdea(null)
       setPlan((p) => (finished.type === 'generate' && finished.plan ? finished.plan : p))
       // 结果落定依赖这次拉取:瞬时失败退避重试,避免“积分已扣但界面显示失败”
       for (let attempt = 0; ; attempt++) {
@@ -75,6 +79,7 @@ export default function Workspace() {
       }
       try {
         const { jobId } = await startJob(`/api/projects/${id}/${action}`, body)
+        setResumeIdea(null)
         setJob({
           id: jobId,
           type: action,
@@ -82,6 +87,7 @@ export default function Workspace() {
           stage: 'planning',
           progress: null,
           html_preview: null,
+          idea: action === 'generate' ? (body.idea ?? null) : null,
           plan: null,
           error: null,
           version: null,
@@ -129,7 +135,7 @@ export default function Workspace() {
     let cancelled = false
     ;(async () => {
       try {
-        const [detail, active] = await Promise.all([
+        const [detail, { job: active, resume }] = await Promise.all([
           api<ProjectDetail>(`/api/projects/${id}`),
           getActiveJob(id),
         ])
@@ -143,6 +149,12 @@ export default function Workspace() {
           if (active.plan) setPlan(active.plan)
           if (active.html_preview) setHtml(active.html_preview)
           return
+        }
+        // 失败续聊恢复:上次任务失败但有产物,恢复卡片与半成品预览,后续消息将继续该任务
+        if (resume) {
+          setResumeIdea(resume.idea)
+          if (resume.plan) setPlan(resume.plan)
+          if (resume.html_preview) setHtml(resume.html_preview)
         }
         const idea = sp.get('idea')
         if (idea && !detail.html && !started.current) {
@@ -183,8 +195,9 @@ export default function Workspace() {
           stageText={stageText}
           elapsed={elapsed}
           onSend={(text) => {
-            // 以服务端版本号判断:失败残留的半成品 HTML 不算有效版本,应继续走 generate
+            // 成功过 → 对话修改;失败但有产物 → 继续该任务(原想法 + 本条消息作为补充要求);否则全新生成
             if ((project?.current_version ?? 0) > 0) void run('chat', { message: text }, text)
+            else if (resumeIdea) void run('generate', { idea: resumeIdea, note: text }, text)
             else void run('generate', { idea: text }, text)
           }}
         />
