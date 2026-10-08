@@ -9,8 +9,12 @@ function endpoint(env: Env): string {
   return `${env.LLM_BASE_URL.replace(/\/+$/, '')}/chat/completions`
 }
 
+/** 单次输出上限:显式设置是因为 OpenRouter 按 max_tokens 预扣额度,不传则按模型满额(131072)预检,
+ *  低余额账号会被 402 拒绝;16K tokens 足够最重的单段(整页重写 ~15K tokens) */
+const MAX_OUTPUT_TOKENS = 16384
+
 function requestBody(env: Env, messages: ChatMessage[], stream: boolean, thinkingOverride?: unknown): string {
-  const body: Record<string, unknown> = { model: env.LLM_MODEL, messages, stream }
+  const body: Record<string, unknown> = { model: env.LLM_MODEL, messages, stream, max_tokens: MAX_OUTPUT_TOKENS }
   // 思维链控制:调用方可覆盖(如分段排版代码禁用思考换速度);否则用环境配置
   if (thinkingOverride !== undefined) {
     body.thinking = thinkingOverride
