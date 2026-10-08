@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   progress       TEXT,                      -- 人读的分段进度(工作流各 step 写入,如「正在生成章节 2/4」)
   plan_json      TEXT,
   html_preview   TEXT,                      -- 生成中的半成品页面(骨架+已完成计划项),前端实时预览
+  sections_json  TEXT,                      -- {shell, items:[{title,html,ok}]}:各计划项产物,失败后同想法重试可断点复用
   error          TEXT,
   result_version INTEGER,
   started_at     TEXT,

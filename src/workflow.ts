@@ -70,11 +70,44 @@ export class GenerationWorkflow extends WorkflowEntrypoint<Env, GenerationParams
     let plan: Plan | null = null
     let failedNote = ''
     if (job.type === 'generate') {
-      // 阶段 1:规划(结果落库,前端轮询即可展示规划卡片)
+      // 复用检查:同项目、同想法的上次失败任务若留有产物(规划/骨架/已完成计划项),
+      // 本次断点续跑只补缺失部分——用户「继续任务」而非从零重来
+      const prior = await step.do('resume-lookup', async () => {
+        const row = await db
+          .prepare(
+            `SELECT plan_json, sections_json FROM jobs
+             WHERE project_id = ? AND id <> ? AND status = 'failed'
+               AND sections_json IS NOT NULL AND json_extract(payload, '$.idea') = ?
+             ORDER BY created_at DESC LIMIT 1`
+          )
+          .bind(job.project_id, jobId, prompt)
+          .first<{ plan_json: string; sections_json: string }>()
+        if (!row) return null
+        try {
+          return {
+            plan: JSON.parse(row.plan_json) as Plan,
+            artifacts: JSON.parse(row.sections_json) as {
+              shell: string
+              items: { title: string; html: string; ok: boolean }[]
+            },
+          }
+        } catch {
+          return null
+        }
+      })
+      if (prior) {
+        log(`resume: adopting prior plan + ${prior.artifacts.items.filter((x) => x.ok).length} completed items`)
+      }
+
+      // 阶段 1:规划(结果落库,前端轮询即可展示规划卡片);有可复用产物时直接继承上次规划
       const genPlan = await step.do(
         'planning',
         { retries: LLM_STEP_RETRIES },
         async () => {
+          if (prior) {
+            await setProgress('检测到上次未完成的生成,复用其规划')
+            return prior.plan
+          }
           await setProgress('正在规划方案')
           return chatOnce(this.env, planMessages(prompt)).then((t) => parsePlan(t, prompt))
         },
@@ -93,6 +126,7 @@ export class GenerationWorkflow extends WorkflowEntrypoint<Env, GenerationParams
         'shell',
         { retries: LLM_STEP_RETRIES },
         async () => {
+          if (prior) return prior.artifacts.shell
           const doc = extractHtml(await chatOnce(this.env, shellMessages(prompt, genPlan), SEGMENT_TIMEOUT_MS))
           const missing = genPlan.sections
             .slice(0, MAX_SEGMENTS)
@@ -102,8 +136,8 @@ export class GenerationWorkflow extends WorkflowEntrypoint<Env, GenerationParams
             throw new Error(`页面骨架生成无效(缺少内容占位符),请重试`)
           }
           await db
-            .prepare(`UPDATE jobs SET html_preview = ?, updated_at = datetime('now') WHERE id = ?`)
-            .bind(doc, jobId)
+            .prepare(`UPDATE jobs SET html_preview = ?, sections_json = ?, updated_at = datetime('now') WHERE id = ?`)
+            .bind(doc, JSON.stringify({ shell: doc, items: [] }), jobId)
             .run()
           return doc
         },
@@ -114,9 +148,14 @@ export class GenerationWorkflow extends WorkflowEntrypoint<Env, GenerationParams
       // 第 4 个并行请求被饿到 17 分钟超时),串行反而更快更稳;每个计划项独立 checkpoint,
       // 任一失败只重试该项,进度精确到「第几项 + 名称」,完成即回填勾选到 plan_json
       const sections = genPlan.sections.slice(0, MAX_SEGMENTS)
+      const priorItems = prior?.artifacts.items ?? []
+      const items: { title: string; html: string; ok: boolean }[] = priorItems
+        .slice(0, sections.length)
+        .map((it) => ({ ...it }))
       const results: { html: string; ok: boolean }[] = []
       const failedTitles: string[] = []
       for (let i = 0; i < sections.length; i++) {
+        const reused = priorItems[i]?.ok ? priorItems[i] : null
         let ok = true
         let out = ''
         try {
@@ -124,6 +163,10 @@ export class GenerationWorkflow extends WorkflowEntrypoint<Env, GenerationParams
             `section-${i}`,
             { retries: LLM_STEP_RETRIES },
             async () => {
+              if (reused) {
+                await setProgress(`复用上次结果:「${sections[i].title}」(${i + 1}/${sections.length})`)
+                return reused.html
+              }
               await setProgress(`正在生成「${sections[i].title}」(${i + 1}/${sections.length})`)
               const seg = stripFence(
                 await chatOnce(this.env, sectionMessages(prompt, genPlan, i), SEGMENT_TIMEOUT_MS),
@@ -139,6 +182,17 @@ export class GenerationWorkflow extends WorkflowEntrypoint<Env, GenerationParams
           ok = false
           failedTitles.push(sections[i].title)
           out = fallbackSectionHtml(sections[i].title, genPlan.palette)
+        }
+        // 新生成的成功项回填 sections_json(降级占位块不入库,留给下次继续补全)
+        if (ok && !reused) {
+          items[i] = { title: sections[i].title, html: out, ok: true }
+          await db
+            .prepare(`UPDATE jobs SET sections_json = ?, updated_at = datetime('now') WHERE id = ?`)
+            .bind(JSON.stringify({ shell, items }), jobId)
+            .run()
+            .catch(() => {})
+        } else if (!ok) {
+          items[i] = { title: sections[i].title, html: out, ok: false }
         }
         results.push({ html: out, ok })
         // 勾选/标记 + 半成品页面上屏
@@ -159,7 +213,7 @@ export class GenerationWorkflow extends WorkflowEntrypoint<Env, GenerationParams
             jobId,
           )
           .run()
-        log(`section-${i} ${ok ? 'done' : 'degraded'}`)
+        log(`section-${i} ${ok ? (reused ? 'reused' : 'done') : 'degraded'}`)
       }
       html = results.reduce((acc, r, j) => acc.replace(sectionPlaceholder(j), `\n${r.html}\n`), shell)
       failedNote = failedTitles.length ? `(${failedTitles.length} 个板块生成失败:${failedTitles.join('、')},可在对话中要求补全)` : ''
