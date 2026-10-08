@@ -24,8 +24,8 @@ const SEGMENT_TIMEOUT_MS = 600_000
 const REWRITE_TIMEOUT_MS = 600_000
 /** LLM 步骤失败后的自动重试:吸收网关瞬时 5xx/断流;次数收紧(1 次),避免超时叠加成小时级等待 */
 const LLM_STEP_RETRIES = { limit: 1, delay: 8, backoff: 'exponential' } as const
-/** 分段排版代码不需要深度思考:禁用后每段省几十秒的思维链前缀,整页累计省数分钟 */
-const SEGMENT_THINKING = { type: 'disabled' } as const
+// 注意:勿对分段调用强行禁用思考——「始终思考」型模型(如 glm-5.3-flash)不支持 disabled,
+// 会返回 400 code 1210(只接受 low/high/max);思维链开销走环境变量 LLM_THINKING 控制
 
 /**
  * 生成工作流:持久执行引擎,取代原 waitUntil 执行体(免费版 waitUntil 约 2-4 分钟即被回收,
@@ -91,9 +91,7 @@ export class GenerationWorkflow extends WorkflowEntrypoint<Env, GenerationParams
         'shell',
         { retries: LLM_STEP_RETRIES },
         async () => {
-          const doc = extractHtml(
-            await chatOnce(this.env, shellMessages(prompt, genPlan), SEGMENT_TIMEOUT_MS, SEGMENT_THINKING),
-          )
+          const doc = extractHtml(await chatOnce(this.env, shellMessages(prompt, genPlan), SEGMENT_TIMEOUT_MS))
           const missing = genPlan.sections
             .slice(0, MAX_SEGMENTS)
             .map((_, i) => i)
@@ -122,7 +120,7 @@ export class GenerationWorkflow extends WorkflowEntrypoint<Env, GenerationParams
           async () => {
             await setProgress(`正在生成「${sections[i].title}」(${i + 1}/${sections.length})`)
             const out = stripFence(
-              await chatOnce(this.env, sectionMessages(prompt, genPlan, i), SEGMENT_TIMEOUT_MS, SEGMENT_THINKING),
+              await chatOnce(this.env, sectionMessages(prompt, genPlan, i), SEGMENT_TIMEOUT_MS),
             )
             if (!out.includes('<')) throw new Error(`「${sections[i].title}」未返回有效内容,请重试`)
             // 勾选计划卡片 + 半成品页面上屏:该项标记完成,已完成的片段拼进 html_preview
