@@ -15,12 +15,14 @@ import {
   stripFence,
 } from './lib/prompts'
 
-/** 每段 LLM 调用的单次超时:分段后单段 1~2 分钟即完成,远低于网关长请求风险区(200s+) */
-const SEGMENT_TIMEOUT_MS = 240_000
+/** 每段 LLM 调用的单次超时:重内容计划项(如作品集网格)在慢时段可能要 5 分钟,留足余量避免反复掐死重试 */
+const SEGMENT_TIMEOUT_MS = 360_000
 /** chat 修改是整页重写,无法分段,保留长超时(网关长请求风险由 workflow 层重试兜底) */
 const REWRITE_TIMEOUT_MS = 600_000
-/** LLM 步骤失败后的自动重试:吸收网关瞬时 5xx/断流 */
-const LLM_STEP_RETRIES = { limit: 2, delay: 8, backoff: 'exponential' } as const
+/** LLM 步骤失败后的自动重试:吸收网关瞬时 5xx/断流;次数收紧(1 次),避免超时叠加成小时级等待 */
+const LLM_STEP_RETRIES = { limit: 1, delay: 8, backoff: 'exponential' } as const
+/** 分段排版代码不需要深度思考:禁用后每段省几十秒的思维链前缀,整页累计省数分钟 */
+const SEGMENT_THINKING = { type: 'disabled' } as const
 
 /**
  * 生成工作流:持久执行引擎,取代原 waitUntil 执行体(免费版 waitUntil 约 2-4 分钟即被回收,
@@ -86,7 +88,9 @@ export class GenerationWorkflow extends WorkflowEntrypoint<Env, GenerationParams
         'shell',
         { retries: LLM_STEP_RETRIES },
         async () => {
-          const doc = extractHtml(await chatOnce(this.env, shellMessages(prompt, genPlan), SEGMENT_TIMEOUT_MS))
+          const doc = extractHtml(
+            await chatOnce(this.env, shellMessages(prompt, genPlan), SEGMENT_TIMEOUT_MS, SEGMENT_THINKING),
+          )
           const missing = genPlan.sections
             .slice(0, MAX_SEGMENTS)
             .map((_, i) => i)
@@ -114,7 +118,9 @@ export class GenerationWorkflow extends WorkflowEntrypoint<Env, GenerationParams
           { retries: LLM_STEP_RETRIES },
           async () => {
             await setProgress(`正在生成「${sections[i].title}」(${i + 1}/${sections.length})`)
-            const out = stripFence(await chatOnce(this.env, sectionMessages(prompt, genPlan, i), SEGMENT_TIMEOUT_MS))
+            const out = stripFence(
+              await chatOnce(this.env, sectionMessages(prompt, genPlan, i), SEGMENT_TIMEOUT_MS, SEGMENT_THINKING),
+            )
             if (!out.includes('<')) throw new Error(`「${sections[i].title}」未返回有效内容,请重试`)
             // 勾选计划卡片 + 半成品页面上屏:该项标记完成,已完成的片段拼进 html_preview
             const htmlSoFar = [...filled, out].reduce(

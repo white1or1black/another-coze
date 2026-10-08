@@ -9,10 +9,12 @@ function endpoint(env: Env): string {
   return `${env.LLM_BASE_URL.replace(/\/+$/, '')}/chat/completions`
 }
 
-function requestBody(env: Env, messages: ChatMessage[], stream: boolean): string {
+function requestBody(env: Env, messages: ChatMessage[], stream: boolean, thinkingOverride?: unknown): string {
   const body: Record<string, unknown> = { model: env.LLM_MODEL, messages, stream }
-  // 可选:思考型模型(GLM 5.x 等)的思维链控制,JSON 原样透传,如 {"type":"enabled","effort":"low"}
-  if (env.LLM_THINKING) {
+  // 思维链控制:调用方可覆盖(如分段排版代码禁用思考换速度);否则用环境配置
+  if (thinkingOverride !== undefined) {
+    body.thinking = thinkingOverride
+  } else if (env.LLM_THINKING) {
     try {
       body.thinking = JSON.parse(env.LLM_THINKING)
     } catch {
@@ -46,7 +48,13 @@ const STREAM_TOTAL_MS = 600_000
 /** 流式空闲看门狗:连续这么久收不到任何字节即判定挂死 */
 const STREAM_IDLE_MS = 90_000
 
-async function request(env: Env, messages: ChatMessage[], stream: boolean, timeoutMs: number): Promise<Response> {
+async function request(
+  env: Env,
+  messages: ChatMessage[],
+  stream: boolean,
+  timeoutMs: number,
+  thinkingOverride?: unknown
+): Promise<Response> {
   if (!env.LLM_BASE_URL || !env.LLM_API_KEY || !env.LLM_MODEL) {
     throw new Error('未配置 LLM,请复制 .dev.vars.example 为 .dev.vars 并填写')
   }
@@ -62,7 +70,7 @@ async function request(env: Env, messages: ChatMessage[], stream: boolean, timeo
       const res = await fetch(endpoint(env), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${env.LLM_API_KEY}` },
-        body: requestBody(env, messages, stream),
+        body: requestBody(env, messages, stream, thinkingOverride),
         signal: AbortSignal.timeout(timeoutMs),
       })
       if (res.ok) {
@@ -96,9 +104,14 @@ async function request(env: Env, messages: ChatMessage[], stream: boolean, timeo
   )
 }
 
-/** 非流式调用,返回完整回复文本;超时可按调用定制(整页生成耗时长,需要放宽) */
-export async function chatOnce(env: Env, messages: ChatMessage[], timeoutMs = REQUEST_TIMEOUT_MS): Promise<string> {
-  const res = await request(env, messages, false, timeoutMs)
+/** 非流式调用,返回完整回复文本;超时与思维链控制可按调用定制(整页生成耗时长需要放宽,分段排版代码可禁用思考换速度) */
+export async function chatOnce(
+  env: Env,
+  messages: ChatMessage[],
+  timeoutMs = REQUEST_TIMEOUT_MS,
+  thinkingOverride?: unknown
+): Promise<string> {
+  const res = await request(env, messages, false, timeoutMs, thinkingOverride)
   const data = await res.json<{ choices?: { message?: { content?: string } }[] }>()
   return data.choices?.[0]?.message?.content ?? ''
 }
