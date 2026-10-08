@@ -84,7 +84,8 @@ async function request(env: Env, messages: ChatMessage[], stream: boolean, timeo
       timedOut = (err as { name?: string }).name === 'TimeoutError'
       bodyText = err instanceof Error ? err.message : ''
       console.log(`[llm] ${timedOut ? 'timeout' : 'network-error'} attempt=${attempt + 1}/3 stream=${stream} ${Date.now() - startedAt}ms ${bodyText}`)
-      if (attempt === 2) break
+      // 超时不做内部重试:单次已等满超时上限,立即交给上层(workflow step)重试,避免最坏 3×超时才收敛
+      if (timedOut || attempt === 2) break
       await new Promise((r) => setTimeout(r, 800 * 2 ** attempt + Math.random() * 400))
     }
   }

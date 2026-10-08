@@ -40,9 +40,9 @@ export function codeMessages(idea: string, plan: Plan): ChatMessage[] {
 
 /**
  * 分段生成上限:章节再多也只构建前 N 段。模型网关对长单请求不稳定(实测 200~400s 即可能 5xx/断流),
- * 每段控制在 1~2 分钟内完成;规划阶段已把 sections 限制在 3-6 个,通常不会触顶。
+ * 每段控制在 1~2 分钟内完成;与规划阶段的 sections 上限(3-6 个)一致。
  */
-export const MAX_SEGMENTS = 4
+export const MAX_SEGMENTS = 6
 
 /** 章节占位符(骨架中独占一行,分段组装时被替换) */
 export function sectionPlaceholder(index: number): string {

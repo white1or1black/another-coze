@@ -80,6 +80,7 @@ export default function Workspace() {
           type: action,
           status: 'pending',
           stage: 'planning',
+          progress: null,
           plan: null,
           error: null,
           version: null,
@@ -109,14 +110,16 @@ export default function Workspace() {
     })
   }, [job?.id, streaming, settle])
 
-  /** 当前生成阶段的用户可读文案(chat 没有规划阶段;generate 在 plan 到达前是规划中) */
+  /** 当前生成阶段的用户可读文案:优先展示工作流写入的分段进度,无则按 stage 推导 */
   const stageText = !streaming || !runningAction
     ? ''
-    : runningAction === 'chat'
-      ? '正在按你的要求修改页面'
-      : job?.stage === 'coding' || plan
-        ? '正在编写页面代码'
-        : '正在规划方案'
+    : job?.progress
+      ? job.progress
+      : runningAction === 'chat'
+        ? '正在按你的要求修改页面'
+        : job?.stage === 'coding' || plan
+          ? '正在编写页面代码'
+          : '正在规划方案'
 
   useEffect(() => {
     if (!id) return

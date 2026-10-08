@@ -35,6 +35,8 @@ export interface JobSnapshot {
   type: 'generate' | 'chat'
   status: 'pending' | 'running' | 'succeeded' | 'failed'
   stage: 'planning' | 'coding'
+  /** 人读的分段进度(如「正在生成章节 2/4」),无则回退到按 stage 推导的文案 */
+  progress: string | null
   plan: Plan | null
   error: string | null
   version: number | null

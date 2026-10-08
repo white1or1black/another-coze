@@ -37,6 +37,9 @@ export class GenerationWorkflow extends WorkflowEntrypoint<Env, GenerationParams
     const db = this.env.DB
     const startedMs = Date.now()
     const log = (msg: string) => console.log(`[wf] ${jobId.slice(0, 8)} ${msg} (${Math.round((Date.now() - startedMs) / 1000)}s)`)
+    // 分段进度落库(前端轮询/SSE 展示);写在各 step 体内,重放/重试时重复写同值,幂等
+    const setProgress = (text: string) =>
+      db.prepare(`UPDATE jobs SET progress = ?, updated_at = datetime('now') WHERE id = ?`).bind(text, jobId).run()
 
     // 认领:pending → running;非 pending(被巡检判死等)则直接终止,结果被缓存不会重复执行
     const job = await step.do('claim', async () => {
@@ -64,13 +67,16 @@ export class GenerationWorkflow extends WorkflowEntrypoint<Env, GenerationParams
       const genPlan = await step.do(
         'planning',
         { retries: LLM_STEP_RETRIES },
-        () => chatOnce(this.env, planMessages(prompt)).then((t) => parsePlan(t, prompt)),
+        async () => {
+          await setProgress('正在规划方案')
+          return chatOnce(this.env, planMessages(prompt)).then((t) => parsePlan(t, prompt))
+        },
       )
       plan = genPlan
       await step.do('plan-persist', async () => {
         await db
-          .prepare(`UPDATE jobs SET stage = 'coding', plan_json = ?, updated_at = datetime('now') WHERE id = ?`)
-          .bind(JSON.stringify(genPlan), jobId)
+          .prepare(`UPDATE jobs SET stage = 'coding', progress = ?, updated_at = datetime('now') WHERE id = ?`)
+          .bind('正在生成页面骨架', jobId)
           .run()
       })
       log(`planning done: ${genPlan.name}, ${genPlan.sections.length} sections`)
@@ -95,12 +101,14 @@ export class GenerationWorkflow extends WorkflowEntrypoint<Env, GenerationParams
 
       // 阶段 3:各章节正文,并行生成(每个章节独立 checkpoint,任一失败只重试该章节)
       const sections = genPlan.sections.slice(0, MAX_SEGMENTS)
+      const sectionProgress = `正在并行生成 ${sections.length} 个章节`
       const filled = await Promise.all(
         sections.map((_, i) =>
           step.do(
             `section-${i}`,
             { retries: LLM_STEP_RETRIES },
             async () => {
+              await setProgress(sectionProgress)
               const seg = stripFence(await chatOnce(this.env, sectionMessages(prompt, genPlan, i), SEGMENT_TIMEOUT_MS))
               if (!seg.includes('<')) throw new Error(`章节 ${i} 未返回有效 HTML`)
               return seg
@@ -138,6 +146,7 @@ export class GenerationWorkflow extends WorkflowEntrypoint<Env, GenerationParams
 
     // 提交:版本+项目更新在一个 D1 事务里原子落库
     const version = await step.do('commit-version', async () => {
+      await setProgress('正在组装并保存页面')
       const current = await db
         .prepare('SELECT current_version FROM projects WHERE id = ?')
         .bind(job.project_id)

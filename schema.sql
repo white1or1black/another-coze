@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   payload        TEXT NOT NULL,             -- JSON:{idea} 或 {message}
   status         TEXT NOT NULL DEFAULT 'pending',  -- pending | running | succeeded | failed
   stage          TEXT NOT NULL DEFAULT 'planning', -- planning | coding
+  progress       TEXT,                      -- 人读的分段进度(工作流各 step 写入,如「正在生成章节 2/4」)
   plan_json      TEXT,
   error          TEXT,
   result_version INTEGER,

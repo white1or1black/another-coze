@@ -93,7 +93,7 @@ export default function PreviewPane({ html, streaming, progressText, project, on
                       <span className="h-2 w-2 animate-pulse rounded-full bg-indigo-400" />
                       {progressText || '正在生成页面…'}
                     </span>
-                    <span className="text-xs text-gray-600">整页生成约需一到两分钟,请稍候</span>
+                    <span className="text-xs text-gray-600">分段生成约需 3~6 分钟;可离开页面,云端会继续完成</span>
                   </>
                 ) : (
                   '暂无预览,在左侧描述你的想法开始生成'
