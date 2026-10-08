@@ -4,8 +4,8 @@ import { useAuth } from '../App'
 import ChatPanel from '../components/ChatPanel'
 import PreviewPane from '../components/PreviewPane'
 import TopBar from '../components/TopBar'
-import { api, sse } from '../lib/api'
-import type { Message, Plan, Project, ProjectDetail } from '../lib/types'
+import { api, getActiveJob, startJob, subscribeJob } from '../lib/api'
+import type { JobSnapshot, Message, Plan, Project, ProjectDetail } from '../lib/types'
 
 export default function Workspace() {
   const { id } = useParams()
@@ -16,73 +16,105 @@ export default function Workspace() {
   const [messages, setMessages] = useState<Message[]>([])
   const [html, setHtml] = useState<string | null>(null)
   const [plan, setPlan] = useState<Plan | null>(null)
-  const [thinking, setThinking] = useState('')
-  const [streaming, setStreaming] = useState(false)
-  const [runningAction, setRunningAction] = useState<'generate' | 'chat' | null>(null)
-  const [elapsed, setElapsed] = useState(0)
+  const [job, setJob] = useState<JobSnapshot | null>(null)
   const [error, setError] = useState('')
   const started = useRef(false)
 
-  /** 消费 SSE:plan 事件 → code 增量(节流刷新预览)→ done 落定最终 HTML */
+  const streaming = !!job && (job.status === 'pending' || job.status === 'running')
+  const runningAction = job?.type ?? null
+  const elapsed = job?.elapsed ?? 0
+
+  /** 拉取项目详情,同步服务端最新状态(版本、消息);返回是否成功,由调用方决定如何提示 */
+  const reloadDetail = useCallback(async (): Promise<boolean> => {
+    if (!id) return false
+    try {
+      const detail = await api<ProjectDetail>(`/api/projects/${id}`)
+      setProject(detail.project)
+      setMessages(detail.messages)
+      setHtml(detail.html)
+      return true
+    } catch {
+      return false
+    }
+  }, [id])
+
+  /** 任务收尾:成功则刷新详情与积分,失败则展示错误(幂等:同一任务只结算一次) */
+  const settled = useRef(new Set<string>())
+  const settle = useCallback(
+    async (finished: JobSnapshot) => {
+      if (settled.current.has(finished.id)) return
+      settled.current.add(finished.id)
+      if (finished.status === 'failed') {
+        setError(finished.error ?? '生成失败,请重试')
+        return
+      }
+      setPlan((p) => (finished.type === 'generate' && finished.plan ? finished.plan : p))
+      // 结果落定依赖这次拉取:瞬时失败退避重试,避免“积分已扣但界面显示失败”
+      for (let attempt = 0; ; attempt++) {
+        if (await reloadDetail()) break
+        if (attempt >= 2) {
+          setError('生成结果同步失败,请刷新页面查看最新版本')
+          return
+        }
+        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)))
+      }
+      refresh()
+    },
+    [reloadDetail, refresh]
+  )
+
+  /** 创建后台任务;服务端已落用户消息,前端本地补一条保证即时反馈 */
   const run = useCallback(
     async (action: 'generate' | 'chat', body: Record<string, string>, userText: string) => {
       setError('')
-      setStreaming(true)
-      setRunningAction(action)
-      setElapsed(0)
-      setThinking('')
-      setMessages((m) => [...m, { id: crypto.randomUUID(), role: 'user', content: userText, created_at: '' }])
+      const localId = crypto.randomUUID()
+      setMessages((m) => [...m, { id: localId, role: 'user', content: userText, created_at: '' }])
       if (action === 'generate') {
         setPlan(null)
         setHtml(null)
       }
-      let acc = ''
-      let lastFlush = 0
       try {
-        await sse(`/api/projects/${id}/${action}`, body, (evt) => {
-          if (evt.type === 'plan') {
-            setPlan(evt.data)
-          } else if (evt.type === 'thinking') {
-            setThinking((t) => (t + evt.delta).slice(-400))
-          } else if (evt.type === 'code') {
-            if (!acc) setThinking('')
-            acc += evt.delta
-            const now = Date.now()
-            if (now - lastFlush > 120) {
-              lastFlush = now
-              setHtml(acc)
-            }
-          } else if (evt.type === 'progress') {
-            setElapsed(evt.elapsed)
-          } else if (evt.type === 'done') {
-            setThinking('')
-            setHtml(evt.html)
-            setProject((p) => (p ? { ...p, current_version: evt.version } : p))
-            setMessages((m) => [
-              ...m,
-              { id: `v${evt.version}`, role: 'assistant', content: `已生成 v${evt.version}`, created_at: '' },
-            ])
-            refresh()
-          } else if (evt.type === 'error') {
-            setError(evt.message)
-          }
+        const { jobId } = await startJob(`/api/projects/${id}/${action}`, body)
+        setJob({
+          id: jobId,
+          type: action,
+          status: 'pending',
+          stage: 'planning',
+          plan: null,
+          error: null,
+          version: null,
+          elapsed: 0,
         })
       } catch (err) {
         setError((err as Error).message)
-      } finally {
-        setStreaming(false)
-        setRunningAction(null)
+        // 只按 id 回滚刚插入的本地消息,不影响历史里同文的消息
+        setMessages((m) => m.filter((x) => x.id !== localId))
       }
     },
-    [id, refresh]
+    [id]
   )
+
+  /** 订阅任务进度:SSE 推送、断线自动降级轮询都在 subscribeJob 内部处理;终态时结算 */
+  useEffect(() => {
+    if (!job || !streaming) return
+    const apply = (next: JobSnapshot) => {
+      setJob(next)
+      if (next.plan) setPlan(next.plan)
+      if (next.status === 'succeeded' || next.status === 'failed') void settle(next)
+    }
+    // 进度彻底拿不到(会话过期/持续断网):结束任务态并提示,避免输入被永久禁用
+    return subscribeJob(job.id, apply, (message) => {
+      setJob(null)
+      setError(message)
+    })
+  }, [job?.id, streaming, settle])
 
   /** 当前生成阶段的用户可读文案(chat 没有规划阶段;generate 在 plan 到达前是规划中) */
   const stageText = !streaming || !runningAction
     ? ''
     : runningAction === 'chat'
       ? '正在按你的要求修改页面'
-      : plan
+      : job?.stage === 'coding' || plan
         ? '正在编写页面代码'
         : '正在规划方案'
 
@@ -91,16 +123,25 @@ export default function Workspace() {
     let cancelled = false
     ;(async () => {
       try {
-        const detail = await api<ProjectDetail>(`/api/projects/${id}`)
+        const [detail, active] = await Promise.all([
+          api<ProjectDetail>(`/api/projects/${id}`),
+          getActiveJob(id),
+        ])
         if (cancelled) return
         setProject(detail.project)
         setMessages(detail.messages)
         setHtml(detail.html)
+        // 断线/刷新恢复:有进行中的任务则接管订阅;此时项目被任务占用,?idea 自动重发只会 409,故跳过
+        if (active) {
+          setJob(active)
+          if (active.plan) setPlan(active.plan)
+          return
+        }
         const idea = sp.get('idea')
         if (idea && !detail.html && !started.current) {
           started.current = true
           setSp({}, { replace: true })
-          run('generate', { idea }, idea)
+          void run('generate', { idea }, idea)
         }
       } catch (err) {
         if (!cancelled) setError((err as Error).message)
@@ -131,14 +172,13 @@ export default function Workspace() {
           messages={messages}
           plan={plan}
           streaming={streaming}
-          thinking={thinking}
           error={error}
           stageText={stageText}
           elapsed={elapsed}
           onSend={(text) => {
-            // 以服务端版本号判断:流式失败残留的半成品 HTML 不算有效版本,应继续走 generate
-            if ((project?.current_version ?? 0) > 0) run('chat', { message: text }, text)
-            else run('generate', { idea: text }, text)
+            // 以服务端版本号判断:失败残留的半成品 HTML 不算有效版本,应继续走 generate
+            if ((project?.current_version ?? 0) > 0) void run('chat', { message: text }, text)
+            else void run('generate', { idea: text }, text)
           }}
         />
         <PreviewPane

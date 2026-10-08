@@ -1,4 +1,4 @@
-import type { Plan } from './types'
+import type { JobSnapshot } from './types'
 
 export async function api<T>(path: string, opts: { method?: string; body?: unknown } = {}): Promise<T> {
   const res = await fetch(path, {
@@ -21,60 +21,89 @@ export async function api<T>(path: string, opts: { method?: string; body?: unkno
   return (await res.json()) as T
 }
 
-export type SseEvent =
-  | { type: 'plan'; data: Plan }
-  | { type: 'thinking'; delta: string }
-  | { type: 'code'; delta: string }
-  | { type: 'progress'; elapsed: number }
-  | { type: 'done'; version: number; html: string; credits: number }
-  | { type: 'error'; message: string }
+/** 创建后台生成任务,立即返回 jobId */
+export function startJob(path: string, body: Record<string, string>): Promise<{ jobId: string }> {
+  return api<{ jobId: string }>(path, { method: 'POST', body })
+}
 
-/** POST 方式的 SSE 消费(EventSource 不支持 POST,故手动解析流) */
-export async function sse(url: string, body: unknown, onEvent: (event: SseEvent) => void): Promise<void> {
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-  if (!res.ok || !res.body) {
-    let message = `请求失败(${res.status})`
-    try {
-      const data = (await res.json()) as { error?: string }
-      if (data.error) message = data.error
-    } catch {
-      // 保留默认消息
+const POLL_INTERVAL_MS = 2000
+/** 连续轮询失败上限(会话过期/持续断网时终止订阅,避免无限静默重试) */
+const MAX_POLL_FAILURES = 3
+
+/**
+ * 订阅任务进度:优先 SSE 推送,连接断开自动降级为轮询,全程通过 onUpdate 输出统一快照,
+ * 到达终态后自行停止。返回取消函数;连续多次轮询失败时调用 onError(此时任务可能仍在
+ * 服务端执行,调用方应结束任务态并提示用户刷新恢复)
+ */
+export function subscribeJob(
+  jobId: string,
+  onUpdate: (job: JobSnapshot) => void,
+  onError: (message: string) => void
+): () => void {
+  const es = new EventSource(`/api/jobs/${jobId}/events`)
+  let terminal = false
+  let pollTimer: ReturnType<typeof setInterval> | null = null
+  let failures = 0
+
+  const stop = () => {
+    es.close()
+    if (pollTimer) {
+      clearInterval(pollTimer)
+      pollTimer = null
     }
-    throw new Error(message)
   }
 
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder()
-  let buf = ''
-  // 流必须以 done/error 事件收尾;否则说明连接被意外掐断(worker 崩溃/网络断),要明确告知用户
-  let terminated = false
-  const handle = (evt: SseEvent) => {
-    if (evt.type === 'done' || evt.type === 'error') terminated = true
-    onEvent(evt)
+  const apply = (job: JobSnapshot) => {
+    if (job.status === 'succeeded' || job.status === 'failed') {
+      terminal = true
+      stop()
+    }
+    onUpdate(job)
   }
-  try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buf += decoder.decode(value, { stream: true })
-      const parts = buf.split('\n\n')
-      buf = parts.pop() ?? ''
-      for (const part of parts) {
-        const line = part.trim()
-        if (!line.startsWith('data:')) continue
-        try {
-          handle(JSON.parse(line.slice(5).trim()) as SseEvent)
-        } catch {
-          // 忽略不完整数据
+
+  const startPolling = () => {
+    if (pollTimer || terminal) return
+    pollTimer = setInterval(async () => {
+      try {
+        const job = await getJob(jobId)
+        failures = 0
+        if (job) apply(job)
+      } catch {
+        failures += 1
+        if (failures >= MAX_POLL_FAILURES) {
+          stop()
+          onError('任务进度获取失败,请稍后刷新页面查看结果')
         }
       }
-    }
-  } finally {
-    reader.cancel().catch(() => {})
+    }, POLL_INTERVAL_MS)
   }
-  if (!terminated) throw new Error('生成连接中断,本次未完成,请重新发送(未扣除积分)')
+
+  es.onmessage = (e) => {
+    try {
+      apply(JSON.parse(e.data) as JobSnapshot)
+    } catch {
+      // 忽略不完整数据
+    }
+  }
+  es.onerror = () => {
+    // 服务端推完终态会主动关流,浏览器触发 onerror 并尝试重连 —— 已拿到终态,直接关闭即可
+    if (terminal) {
+      stop()
+      return
+    }
+    // 连接异常(网络断/代理掐断/会话过期):降级为轮询,任务本身不受影响
+    es.close()
+    startPolling()
+  }
+  return stop
+}
+
+export async function getJob(jobId: string): Promise<JobSnapshot | null> {
+  const data = await api<{ job: JobSnapshot | null }>(`/api/jobs/${jobId}`)
+  return data.job
+}
+
+export async function getActiveJob(projectId: string): Promise<JobSnapshot | null> {
+  const data = await api<{ job: JobSnapshot | null }>(`/api/projects/${projectId}/job/active`)
+  return data.job
 }

@@ -29,6 +29,18 @@ export interface Plan {
   sections: { title: string; summary: string }[]
 }
 
+/** 后台生成任务的状态快照(轮询/SSE 响应体,与服务端 jobSnapshot 对应) */
+export interface JobSnapshot {
+  id: string
+  type: 'generate' | 'chat'
+  status: 'pending' | 'running' | 'succeeded' | 'failed'
+  stage: 'planning' | 'coding'
+  plan: Plan | null
+  error: string | null
+  version: number | null
+  elapsed: number
+}
+
 export interface ProjectDetail {
   project: Project
   messages: Message[]

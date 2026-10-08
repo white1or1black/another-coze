@@ -42,6 +42,24 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- 后台生成任务:请求只负责建任务并立刻返回,实际 LLM 生成在 waitUntil / cron 中异步执行,
+-- 前端轮询任务状态,刷新页面、断网都不丢任务
+CREATE TABLE IF NOT EXISTS jobs (
+  id             TEXT PRIMARY KEY,
+  project_id     TEXT NOT NULL REFERENCES projects(id),
+  user_id        TEXT NOT NULL REFERENCES users(id),
+  type           TEXT NOT NULL,             -- 'generate' | 'chat'
+  payload        TEXT NOT NULL,             -- JSON:{idea} 或 {message}
+  status         TEXT NOT NULL DEFAULT 'pending',  -- pending | running | succeeded | failed
+  stage          TEXT NOT NULL DEFAULT 'planning', -- planning | coding
+  plan_json      TEXT,
+  error          TEXT,
+  result_version INTEGER,
+  started_at     TEXT,
+  updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  created_at     TEXT NOT NULL DEFAULT (datetime('now'))  -- 任务总龄的计时起点(cron 据此永久判死反复中断的任务)
+);
+
 -- 站点运行数据:生成页面通过 /api/site/:slug/:env/:collection 读写,Cloudflare BaaS 的存储层
 -- env = 'draft'(编辑器预览产生) / 'live'(发布后访客产生),两套数据互不可见
 CREATE TABLE IF NOT EXISTS site_data (
@@ -59,3 +77,8 @@ CREATE INDEX IF NOT EXISTS idx_versions_project ON versions(project_id);
 CREATE INDEX IF NOT EXISTS idx_messages_project ON messages(project_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user    ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_site_data_lookup ON site_data(project_id, collection, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_project ON jobs(project_id, status);
+CREATE INDEX IF NOT EXISTS idx_jobs_user    ON jobs(user_id, status);
+-- cron 每分钟按 status + updated_at 清扫,走此索引避免全表扫描
+CREATE INDEX IF NOT EXISTS idx_jobs_sweep   ON jobs(status, updated_at);

@@ -1,6 +1,8 @@
 export type Env = {
   DB: D1Database
   ASSETS: Fetcher
+  /** 生成工作流:持久执行引擎(见 src/workflow.ts) */
+  GENERATION: Workflow
   LLM_BASE_URL: string
   LLM_API_KEY: string
   LLM_MODEL: string
@@ -52,4 +54,9 @@ export interface Plan {
   tagline: string
   palette: string[]
   sections: { title: string; summary: string }[]
+}
+
+/** 生成工作流入参:instance id 即 jobs.id */
+export interface GenerationParams {
+  jobId: string
 }

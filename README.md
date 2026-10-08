@@ -16,7 +16,9 @@
 ```
 浏览器 ──► Cloudflare Worker (单入口, Hono)
              ├── 静态资源: Workers Assets (前端 SPA, Vite + React + Tailwind)
-             ├── /api/*   : auth / projects / generate(SSE) / publish
+             ├── /api/*   : auth / projects / generate(建任务+触发工作流) / jobs(轮询) / publish
+             ├── Workflows: 持久执行引擎,分段生成整页;step 级 checkpoint,中断自动断点续跑
+             ├── cron     : 每分钟巡检 jobs(实例 errored/丢失但行仍活动的判死解锁)
              ├── /s/:slug : 发布的用户站点(从 D1 读 HTML 返回)
              └── D1 (SQLite): 唯一持久层(users/sessions/projects/versions/messages)
 ```
@@ -24,6 +26,7 @@
 关键取舍:
 
 - 生成产物为单 HTML 文件(几十 KB),直接存 D1 TEXT 列,不引入 R2/KV/Queues/DO
+- 生成是**后台任务 + Workflows 持久执行**:`POST generate/chat` 建 `jobs` 行并触发工作流实例(实例 id = jobId)立即返回;整页按规划章节**分段生成**(骨架+占位符 → 各章节并行 → 组装),每个 step 结果 checkpoint、失败自动重试、实例中断断点续跑。为何分段:免费版 waitUntil 约 2-4 分钟被回收、10ms CPU 撑不住流式逐 chunk 解析、网关对 200s+ 的长单请求不稳定——分段后每段 1~2 分钟,全部绕开
 - LLM 用 OpenAI 兼容接口(环境变量 `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL`),原生 fetch,可接 OpenAI/DeepSeek/GLM/OpenRouter 等
 - 发布用路径而非子域名,免 wildcard 证书;`/s/:slug` 加 `Content-Security-Policy: sandbox allow-scripts allow-forms allow-popups`,生成的 JS 运行在 opaque origin,读不到主站 cookie/localStorage
 - 前端依赖仅 react + react-router-dom + vite + tailwindcss;Worker 端仅 hono
@@ -49,20 +52,24 @@ npx wrangler secret put LLM_BASE_URL    # 依次配置三个 secrets
 npx wrangler secret put LLM_API_KEY
 npx wrangler secret put LLM_MODEL
 npm run deploy                          # 构建前端并部署 Worker
+npx wrangler tail                       # 实时日志:LLM 每次尝试([llm])与任务生命周期([job])
 ```
 
 部署后重复本地第 4 步的公开链接验证。
 
-## SSE 协议
+## 进度订阅协议(SSE 优先 + 轮询兜底)
 
-`POST /api/projects/:id/generate | chat` 返回 `text/event-stream`,`data:` 行依次为:
+`POST /api/projects/:id/generate | chat` 只创建后台任务并立即返回 `{"jobId":"…"}`。
+
+进度获取是**混合模式**:
+- 优先:`GET /api/jobs/:id/events` 返回 `text/event-stream`(EventSource 直接可用),状态变化才推送,空闲期 15s 一次心跳;终态后服务端主动关流
+- 兜底:SSE 被代理/网络掐断时,前端自动降级为每 2s 轮询 `GET /api/jobs/:id`;轮询也连续失败(会话过期/持续断网)则终止订阅并提示,任务仍由服务端继续执行,刷新页面可重新接管
+- 连接断开不影响任务执行:生成由 Workflows 持久执行(step 级 checkpoint,实例中断自动断点续跑);cron 每分钟巡检,实例已 errored/丢失的任务判死解锁项目
+
+SSE `data:` 行格式(与轮询响应体一致):
 
 ```
-{"type":"plan","data":{"name":"…","tagline":"…","palette":["#…"],"sections":[{"title":"…","summary":"…"}]}}
-{"type":"thinking","delta":"…"}            // 可选,思维链增量(思考型模型如 GLM 5.x 才有)
-{"type":"code","delta":"…"}                // 多条增量
-{"type":"done","version":3,"html":"…","credits":18}
-{"type":"error","message":"…"}
+{"id":"…","type":"generate","status":"running","stage":"coding","plan":{…},"error":null,"version":null,"elapsed":42}
 ```
 
 > 思考型模型默认思维链较长,生成前会有一段「思考中」阶段;可通过 `LLM_THINKING`(JSON,原样透传,如 `{"type":"enabled","effort":"low"}`)调节,LLM 网关偶发瞬时 401/5xx 已内置一次自动重试。

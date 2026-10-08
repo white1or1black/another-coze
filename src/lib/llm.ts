@@ -39,24 +39,39 @@ function friendlyError(status: number, body: string): string {
   return `LLM 请求失败(${status}):${body.slice(0, 200)}`
 }
 
-async function request(env: Env, messages: ChatMessage[], stream: boolean): Promise<Response> {
+/** 非流式单次请求的默认总超时:思考型模型规划阶段也可能静默较久,取宽松值 */
+const REQUEST_TIMEOUT_MS = 150_000
+/** 流式请求总超时(兜底,防无限流) */
+const STREAM_TOTAL_MS = 600_000
+/** 流式空闲看门狗:连续这么久收不到任何字节即判定挂死 */
+const STREAM_IDLE_MS = 90_000
+
+async function request(env: Env, messages: ChatMessage[], stream: boolean, timeoutMs: number): Promise<Response> {
   if (!env.LLM_BASE_URL || !env.LLM_API_KEY || !env.LLM_MODEL) {
     throw new Error('未配置 LLM,请复制 .dev.vars.example 为 .dev.vars 并填写')
   }
-  const init: RequestInit = {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${env.LLM_API_KEY}` },
-    body: requestBody(env, messages, stream),
-  }
   let status = 0
   let bodyText = ''
+  let timedOut = false
   // 最多 3 次尝试:指数退避(0.8s/1.6s)加随机抖动;429/503 优先遵循服务端 Retry-After(封顶 8s)
+  // 每次尝试独立超时(signal 在循环内创建):网关挂起时中断等待,超时按瞬态失败走重试
   for (let attempt = 0; attempt < 3; attempt++) {
+    const startedAt = Date.now()
+    timedOut = false
     try {
-      const res = await fetch(endpoint(env), init)
-      if (res.ok) return res
+      const res = await fetch(endpoint(env), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${env.LLM_API_KEY}` },
+        body: requestBody(env, messages, stream),
+        signal: AbortSignal.timeout(timeoutMs),
+      })
+      if (res.ok) {
+        console.log(`[llm] ok attempt=${attempt + 1}/3 stream=${stream} ${Date.now() - startedAt}ms`)
+        return res
+      }
       status = res.status
       bodyText = await res.text().catch(() => '')
+      console.log(`[llm] http-${status} attempt=${attempt + 1}/3 stream=${stream} ${Date.now() - startedAt}ms ${bodyText.slice(0, 200)}`)
       if (!retryable(status) || attempt === 2) break
       const retryAfter = Number(res.headers.get('retry-after'))
       const delay = Number.isFinite(retryAfter) && retryAfter > 0
@@ -64,19 +79,25 @@ async function request(env: Env, messages: ChatMessage[], stream: boolean): Prom
         : 800 * 2 ** attempt + Math.random() * 400
       await new Promise((r) => setTimeout(r, delay))
     } catch (err) {
-      // 网络层异常(DNS/连接中断):按瞬态失败退避重试
+      // 网络层异常(DNS/连接中断/超时):按瞬态失败退避重试;超时单独标记以便给出准确错误
       status = 0
+      timedOut = (err as { name?: string }).name === 'TimeoutError'
       bodyText = err instanceof Error ? err.message : ''
+      console.log(`[llm] ${timedOut ? 'timeout' : 'network-error'} attempt=${attempt + 1}/3 stream=${stream} ${Date.now() - startedAt}ms ${bodyText}`)
       if (attempt === 2) break
       await new Promise((r) => setTimeout(r, 800 * 2 ** attempt + Math.random() * 400))
     }
   }
-  throw new Error(friendlyError(status, bodyText))
+  throw new Error(
+    timedOut
+      ? `模型请求超时(单次上限 ${Math.round(timeoutMs / 1000)}s,已重试 3 次)`
+      : friendlyError(status, bodyText)
+  )
 }
 
-/** 非流式调用,返回完整回复文本 */
-export async function chatOnce(env: Env, messages: ChatMessage[]): Promise<string> {
-  const res = await request(env, messages, false)
+/** 非流式调用,返回完整回复文本;超时可按调用定制(整页生成耗时长,需要放宽) */
+export async function chatOnce(env: Env, messages: ChatMessage[], timeoutMs = REQUEST_TIMEOUT_MS): Promise<string> {
+  const res = await request(env, messages, false, timeoutMs)
   const data = await res.json<{ choices?: { message?: { content?: string } }[] }>()
   return data.choices?.[0]?.message?.content ?? ''
 }
@@ -84,14 +105,32 @@ export async function chatOnce(env: Env, messages: ChatMessage[]): Promise<strin
 /** 流式输出的分段:thinking 为思维链增量(思考型模型才有),code 为正文增量 */
 export type StreamChunk = { type: 'thinking'; delta: string } | { type: 'code'; delta: string }
 
-/** 流式调用,逐段 yield 思维链/正文增量(OpenAI 兼容 SSE 格式) */
+/** 流式调用,逐段 yield 思维链/正文增量(OpenAI 兼容 SSE 格式);空闲超过 STREAM_IDLE_MS 视为挂死 */
 export async function* streamChat(env: Env, messages: ChatMessage[]): AsyncGenerator<StreamChunk> {
-  const res = await request(env, messages, true)
+  const res = await request(env, messages, true, STREAM_TOTAL_MS)
   const reader = res.body!.getReader()
   const decoder = new TextDecoder()
   let buf = ''
   for (;;) {
-    const { done, value } = await reader.read()
+    // 看门狗:reader.read() 可能永久挂起(网关断流但不关闭连接),与空闲超时竞速
+    const read = reader.read()
+    let idleTimer: ReturnType<typeof setTimeout> | undefined
+    const idle = new Promise<never>((_, reject) => {
+      idleTimer = setTimeout(
+        () => reject(new Error(`模型响应中断(流式空闲超过 ${STREAM_IDLE_MS / 1000}s 无任何数据)`)),
+        STREAM_IDLE_MS
+      )
+    })
+    let chunk: ReadableStreamReadResult<Uint8Array>
+    try {
+      chunk = await Promise.race([read, idle])
+    } catch (err) {
+      void reader.cancel().catch(() => {})
+      throw err instanceof Error ? err : new Error('模型响应中断,请重试')
+    } finally {
+      if (idleTimer !== undefined) clearTimeout(idleTimer)
+    }
+    const { done, value } = chunk
     if (done) break
     buf += decoder.decode(value, { stream: true })
     const lines = buf.split('\n')

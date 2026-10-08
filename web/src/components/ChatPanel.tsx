@@ -5,20 +5,19 @@ interface Props {
   messages: Message[]
   plan: Plan | null
   streaming: boolean
-  thinking: string
   error: string
   stageText: string
   elapsed: number
   onSend: (text: string) => void
 }
 
-export default function ChatPanel({ messages, plan, streaming, thinking, error, stageText, elapsed, onSend }: Props) {
+export default function ChatPanel({ messages, plan, streaming, error, stageText, elapsed, onSend }: Props) {
   const [input, setInput] = useState('')
   const listRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight })
-  }, [messages.length, plan, thinking, streaming, error])
+  }, [messages.length, plan, streaming, error])
 
   function submit() {
     const text = input.trim()
@@ -62,17 +61,11 @@ export default function ChatPanel({ messages, plan, streaming, thinking, error, 
           </div>
         )}
 
-        {streaming && thinking && (
-          <div className="rounded-xl bg-gray-900 px-3 py-2 text-xs leading-5 text-gray-500">
-            <span className="mb-1 block text-gray-400">思考中…</span>
-            {thinking}
-          </div>
-        )}
         {streaming && (
           <div className="flex items-center gap-2 text-xs text-gray-400">
             <span className="h-2 w-2 animate-pulse rounded-full bg-indigo-400" />
             <span>
-              {thinking ? '思考中,稍后开始生成代码…' : stageText || '正在生成…'}
+              {stageText || '正在生成…'}
               {elapsed > 0 && <span className="ml-1 text-gray-500">· 已 {elapsed}s</span>}
             </span>
           </div>

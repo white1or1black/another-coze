@@ -38,6 +38,67 @@ export function codeMessages(idea: string, plan: Plan): ChatMessage[] {
   ]
 }
 
+/**
+ * 分段生成上限:章节再多也只构建前 N 段。模型网关对长单请求不稳定(实测 200~400s 即可能 5xx/断流),
+ * 每段控制在 1~2 分钟内完成;规划阶段已把 sections 限制在 3-6 个,通常不会触顶。
+ */
+export const MAX_SEGMENTS = 4
+
+/** 章节占位符(骨架中独占一行,分段组装时被替换) */
+export function sectionPlaceholder(index: number): string {
+  return `<!--FORGE:SECTION:${index}-->`
+}
+
+/** 分段第一步:生成页面骨架(完整文档,正文只含章节占位符) */
+export function shellMessages(idea: string, plan: Plan): ChatMessage[] {
+  const list = plan.sections
+    .slice(0, MAX_SEGMENTS)
+    .map((s, i) => `编号 ${i}:${s.title} —— ${s.summary}`)
+    .join('\n')
+  return [
+    {
+      role: 'system',
+      content: `你是一位顶级前端工程师,负责为单文件网站生成「页面骨架」。这是分段构建的第一步,各章节正文由后续步骤单独生成并替换对应占位符。严格遵守:
+1. 只输出一个完整的 index.html 文档:以 <!DOCTYPE html> 开头、</html> 结尾;不要输出解释或 markdown 代码块。
+2. <head> 内用 <script src="https://cdn.tailwindcss.com"></script> 引入 Tailwind CSS,自定义样式(CSS 变量、渐变、关键动画)写在 <style> 内,配色使用给定调色板,风格统一精致。
+3. <body> 结构:页头导航(站点名 + 锚点菜单)、各章节占位符、页脚。每个章节占位符必须独占一行,格式严格为:
+<!--FORGE:SECTION:编号-->
+编号与下方章节列表一一对应,按顺序排列;占位符之外不要写任何章节正文。
+4. 全局交互(导航高亮、滚动动效等)以内联 <script>(置于 </body> 前)实现;页脚写好版权信息。
+5. 全部文案简体中文;布局响应式;禁止引用外部图片,视觉元素用 CSS 渐变、内联 SVG、emoji 和色块。
+6. 骨架务必精炼,全文控制在 150 行以内;CSS 优先用 Tailwind 工具类,自定义样式只写关键部分。`,
+    },
+    {
+      role: 'user',
+      content: `网站想法:${idea}\n\n网站名:${plan.name}\n一句话定位:${plan.tagline}\n调色板:${plan.palette.join(', ')}\n\n章节列表(占位符编号以此为准):\n${list}`,
+    },
+  ]
+}
+
+/** 分段后续步骤:为单个章节生成正文片段 */
+export function sectionMessages(idea: string, plan: Plan, index: number): ChatMessage[] {
+  const s = plan.sections[index]
+  return [
+    {
+      role: 'system',
+      content: `你是一位顶级前端工程师,正在为单文件网站分段生成正文。本次只负责一个章节,输出会被原样替换进骨架的占位符位置。严格遵守:
+1. 只输出该章节的 HTML 片段(如 <section id="...">...</section>),不要完整文档、不要解释、不要 markdown 代码块。
+2. 样式用 Tailwind 工具类,配色遵循给定调色板,与骨架风格统一;内容真实具体,编写贴近真实的中文示例数据(如商品名、价格、评价、文章标题),禁止 lorem ipsum 或"示例文字"占位。
+3. 片段控制在 70 行以内。
+4. 章节自身的交互(标签页、轮播、表单校验、FAQ 折叠等)可在片段末尾用内联 <script> 以原生 JS 实现,注意避免全局命名冲突。
+5. 若章节需要保存访问者提交的数据(留言板、报名、评论、点赞、计数器等),调用平台内置数据接口,无需任何密钥:
+   - 写入:fetch('__FORGE_API__/<集合名>', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({字段:值}) }),成功返回 {"id":"..."}
+   - 读取:fetch('__FORGE_API__/<集合名>'),返回 {"items":[{"id","data","created_at"}]},data 即写入的 JSON
+   - 页面加载时先读取并渲染已有数据,提交成功后重新拉取刷新列表;请求失败时给出友好提示,不要让页面报错。
+   - 集合名用小写英文单词(如 guestbook、signups);只保存访问者主动提交或页面运行产生的数据,禁止收集密码、支付信息等敏感内容。纯展示章节不要调用该接口。`,
+    },
+    {
+      role: 'user',
+      content: `网站想法:${idea}\n网站名:${plan.name}\n调色板:${plan.palette.join(', ')}\n\n本次负责的章节(编号 ${index}):\n标题:${s.title}\n内容简述:${s.summary}`,
+    },
+  ]
+}
+
 /** 迭代修改:输入当前 HTML + 修改要求,输出修改后的全量 HTML */
 export function reviseMessages(currentHtml: string, requirement: string): ChatMessage[] {
   return [
@@ -88,4 +149,10 @@ export function extractHtml(text: string): string {
   const end = text.toLowerCase().lastIndexOf('</html>')
   if (start !== -1 && end !== -1 && end > start) return text.slice(start, end + 7)
   return text.trim()
+}
+
+/** 去掉模型可能添加的 markdown 代码块围栏,返回片段本体(trim) */
+export function stripFence(text: string): string {
+  const m = text.match(/```[a-zA-Z]*\s*\n([\s\S]*?)\n?```/)
+  return (m ? m[1] : text).trim()
 }

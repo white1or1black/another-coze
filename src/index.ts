@@ -3,13 +3,16 @@ import type { Env } from './types'
 import { authRoutes } from './routes/auth'
 import { projectRoutes } from './routes/projects'
 import { generateRoutes } from './routes/generate'
+import { jobRoutes } from './routes/jobs'
 import { siteRoutes } from './routes/site'
+import { sweepJobs } from './lib/jobs'
 
 const app = new Hono<{ Bindings: Env }>()
 
 app.route('/api/auth', authRoutes)
 app.route('/api/projects', projectRoutes)
 app.route('/api/projects', generateRoutes)
+app.route('/api/jobs', jobRoutes)
 app.route('/api/site', siteRoutes)
 
 /** 公开发布页:/s/:slug,从 D1 读当前版本 HTML;CSP sandbox 使其运行在 opaque origin,无法读取主站凭证 */
@@ -45,4 +48,13 @@ app.onError((err, c) => {
   return c.json({ error: '服务器内部错误' }, 500)
 })
 
-export default app
+export default {
+  fetch: app.fetch,
+  // cron 每分钟巡检:实例已 errored/丢失但任务行仍活动的判死解锁,防止项目被 409 锁死
+  scheduled: (event: ScheduledController, env: Env, ctx: ExecutionContext) => {
+    ctx.waitUntil(sweepJobs(env))
+  },
+}
+
+// Workflows 入口类必须从主模块导出
+export { GenerationWorkflow } from './workflow'

@@ -15,5 +15,18 @@
       // 本地开发不需要真实 id;部署前执行 `wrangler d1 create forge` 并替换
       "database_id": "ee014248-414c-4789-a51c-0f8a133621ce"
     }
-  ]
+  ],
+  // 生成工作流:持久执行引擎,分段生成整页;实例中断后从最后一个完成的 step 自动恢复,
+  // 取代原 waitUntil(免费版 waitUntil 约 2-4 分钟即被回收,撑不住 3~6 分钟的整页生成)
+  "workflows": [
+    {
+      "name": "forge-generation",
+      "binding": "GENERATION",
+      "class_name": "GenerationWorkflow"
+    }
+  ],
+  // cron 兜底巡检:实例已 errored/实例丢失但任务行仍活动的,判死并解锁项目
+  "triggers": {
+    "crons": ["* * * * *"]
+  }
 }
