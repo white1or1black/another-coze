@@ -51,12 +51,24 @@ export default function ChatPanel({ messages, plan, streaming, error, stageText,
               ))}
             </div>
             <ul className="space-y-1 text-xs text-gray-300">
-              {plan.sections.map((s, i) => (
-                <li key={i}>
-                  <span className="text-indigo-300">{s.title}</span>
-                  {s.summary ? ` · ${s.summary}` : ''}
-                </li>
-              ))}
+              {(() => {
+                const activeIdx = streaming ? plan.sections.findIndex((s) => !s.done) : -1
+                return plan.sections.map((s, i) => (
+                  <li key={i} className="flex gap-1.5">
+                    <span
+                      className={`shrink-0 ${
+                        s.done ? 'text-emerald-400' : i === activeIdx ? 'animate-pulse text-indigo-300' : 'text-gray-600'
+                      }`}
+                    >
+                      {s.done ? '✓' : i === activeIdx ? '●' : '○'}
+                    </span>
+                    <span>
+                      <span className={s.done ? 'text-gray-400' : 'text-indigo-300'}>{s.title}</span>
+                      {s.summary ? ` · ${s.summary}` : ''}
+                    </span>
+                  </li>
+                ))
+              })()}
             </ul>
           </div>
         )}

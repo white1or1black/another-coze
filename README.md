@@ -26,7 +26,7 @@
 关键取舍:
 
 - 生成产物为单 HTML 文件(几十 KB),直接存 D1 TEXT 列,不引入 R2/KV/Queues/DO
-- 生成是**后台任务 + Workflows 持久执行**:`POST generate/chat` 建 `jobs` 行并触发工作流实例(实例 id = jobId)立即返回;整页按规划章节**分段生成**(骨架+占位符 → 各章节并行 → 组装),每个 step 结果 checkpoint、失败自动重试、实例中断断点续跑。为何分段:免费版 waitUntil 约 2-4 分钟被回收、10ms CPU 撑不住流式逐 chunk 解析、网关对 200s+ 的长单请求不稳定——分段后每段 1~2 分钟,全部绕开
+- 生成是**后台任务 + Workflows 持久执行**:`POST generate/chat` 建 `jobs` 行并触发工作流实例(实例 id = jobId)立即返回;整页按规划的计划项**分段生成**(骨架+占位符 → 各计划项顺序生成 → 组装),每个 step 结果 checkpoint、失败自动重试、实例中断断点续跑,完成的计划项实时勾选到规划卡片。为何分段:免费版 waitUntil 约 2-4 分钟被回收、10ms CPU 撑不住流式逐 chunk 解析、网关对 200s+ 的长单请求不稳定——分段后每段 1~2 分钟,全部绕开
 - LLM 用 OpenAI 兼容接口(环境变量 `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL`),原生 fetch,可接 OpenAI/DeepSeek/GLM/OpenRouter 等
 - 发布用路径而非子域名,免 wildcard 证书;`/s/:slug` 加 `Content-Security-Policy: sandbox allow-scripts allow-forms allow-popups`,生成的 JS 运行在 opaque origin,读不到主站 cookie/localStorage
 - 前端依赖仅 react + react-router-dom + vite + tailwindcss;Worker 端仅 hono

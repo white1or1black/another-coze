@@ -28,7 +28,7 @@ const LLM_STEP_RETRIES = { limit: 2, delay: 8, backoff: 'exponential' } as const
  * 完成的 step 自动恢复,已完成步骤不重跑;LLM 步骤失败自动按配置重试。
  *
  * generate 流程分四类 step:
- *   claim → planning → shell(骨架+占位符)→ section-0..N(章节正文,并行)→ assemble+commit
+ *   claim → planning → shell(骨架+占位符)→ section-0..N(计划项正文,顺序)→ assemble+commit
  * chat 流程:claim → revise(整页重写)→ commit
  */
 export class GenerationWorkflow extends WorkflowEntrypoint<Env, GenerationParams> {
@@ -92,16 +92,16 @@ export class GenerationWorkflow extends WorkflowEntrypoint<Env, GenerationParams
             .map((_, i) => i)
             .filter((i) => !doc.includes(`FORGE:SECTION:${i}`))
           if (!doc.includes('<') || missing.length) {
-            throw new Error(`骨架无效或缺少章节占位符:${missing.join(',') || '全部'}`)
+            throw new Error(`页面骨架生成无效(缺少内容占位符),请重试`)
           }
           return doc
         },
       )
       log('shell done')
 
-      // 阶段 3:各章节正文,顺序生成。实测同一 key 的并发请求会被网关排队(越靠后越久,
-      // 第 4 个并行请求被饿到 17 分钟超时),串行反而更快更稳;每个章节独立 checkpoint,
-      // 任一失败只重试该章节,进度也能精确到「第几章」
+      // 阶段 3:各计划项正文,顺序生成。实测同一 key 的并发请求会被网关排队(越靠后越久,
+      // 第 4 个并行请求被饿到 17 分钟超时),串行反而更快更稳;每个计划项独立 checkpoint,
+      // 任一失败只重试该项,进度精确到「第几项 + 名称」,完成即回填勾选到 plan_json
       const sections = genPlan.sections.slice(0, MAX_SEGMENTS)
       const filled: string[] = []
       for (let i = 0; i < sections.length; i++) {
@@ -109,9 +109,20 @@ export class GenerationWorkflow extends WorkflowEntrypoint<Env, GenerationParams
           `section-${i}`,
           { retries: LLM_STEP_RETRIES },
           async () => {
-            await setProgress(`正在生成章节 ${i + 1}/${sections.length}:${sections[i].title}`)
+            await setProgress(`正在生成「${sections[i].title}」(${i + 1}/${sections.length})`)
             const out = stripFence(await chatOnce(this.env, sectionMessages(prompt, genPlan, i), SEGMENT_TIMEOUT_MS))
-            if (!out.includes('<')) throw new Error(`章节 ${i} 未返回有效 HTML`)
+            if (!out.includes('<')) throw new Error(`「${sections[i].title}」未返回有效内容,请重试`)
+            // 勾选计划卡片:该项标记完成,前端经轮询/SSE 实时渲染 ✓
+            await db
+              .prepare(`UPDATE jobs SET plan_json = ?, updated_at = datetime('now') WHERE id = ?`)
+              .bind(
+                JSON.stringify({
+                  ...genPlan,
+                  sections: genPlan.sections.map((s, j) => (j <= i ? { ...s, done: true } : s)),
+                }),
+                jobId,
+              )
+              .run()
             return out
           },
         )

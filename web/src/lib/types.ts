@@ -26,7 +26,8 @@ export interface Plan {
   name: string
   tagline: string
   palette: string[]
-  sections: { title: string; summary: string }[]
+  /** 计划项;done 由后端生成完成后回填,卡片实时勾选 */
+  sections: { title: string; summary: string; done?: boolean }[]
 }
 
 /** 后台生成任务的状态快照(轮询/SSE 响应体,与服务端 jobSnapshot 对应) */
@@ -35,7 +36,7 @@ export interface JobSnapshot {
   type: 'generate' | 'chat'
   status: 'pending' | 'running' | 'succeeded' | 'failed'
   stage: 'planning' | 'coding'
-  /** 人读的分段进度(如「正在生成章节 2/4」),无则回退到按 stage 推导的文案 */
+  /** 人读的分段进度(如「正在生成「关于我」(2/5)」),无则回退到按 stage 推导的文案 */
   progress: string | null
   plan: Plan | null
   error: string | null
