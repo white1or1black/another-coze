@@ -4,8 +4,8 @@ import { ACTIVE_STATUS_SQL } from './jobHelpers'
 export type JobType = 'generate' | 'chat'
 export type JobStatus = 'pending' | 'running' | 'succeeded' | 'failed'
 
-/** 任务创建后超过多久仍未结局则判死兜底,解锁项目(正常由工作流引擎推进,不应触达) */
-const JOB_MAX_SECONDS = 1800
+/** 任务创建后超过多久仍未结局则判死兜底(正常由工作流引擎推进,不应触达;实例仍在运行时不判死,见 sweepJobs) */
+const JOB_MAX_SECONDS = 2700
 
 /** 创建任务。同一项目同时只允许一个未完成任务:单条条件 INSERT 原子判定,无 check-then-insert 竞态 */
 export async function createJob(
@@ -57,11 +57,13 @@ export async function sweepJobs(env: Env): Promise<void> {
         // 理论不可达(finalize 先于 complete);防御性判死避免永久锁项目
         await failJob(db, row.id, '任务异常结束,请重试(未扣除积分)')
       }
+      // running/queued:引擎仍在推进,不判死——慢网关时段单段可能 10 分钟,误杀会丢弃最终成功的页面
     } catch {
       // 实例不存在(创建失败残留等)
       await failJob(db, row.id, '任务执行体丢失,请重试(未扣除积分)')
     }
   }
+  // 终极兜底:超龄仍活动才判死解锁;若实例事后完成,finalize 会带乐观锁复活其结果
   await db
     .prepare(
       `UPDATE jobs SET status = 'failed', error = '任务超时未完成,请重新发起(未扣除积分)', updated_at = datetime('now')

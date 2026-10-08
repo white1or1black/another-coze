@@ -239,7 +239,7 @@ export class GenerationWorkflow extends WorkflowEntrypoint<Env, GenerationParams
 
     if (!html.includes('<')) throw new Error('模型未返回有效页面,请重试')
 
-    // 提交:版本+项目更新在一个 D1 事务里原子落库
+    // 提交:版本+项目更新在一个 D1 事务里原子落库;current_version 乐观锁防止迟到实例覆盖更新的版本
     const version = await step.do('commit-version', async () => {
       await setProgress('正在组装并保存页面')
       const current = await db
@@ -253,27 +253,29 @@ export class GenerationWorkflow extends WorkflowEntrypoint<Env, GenerationParams
         db
           .prepare('INSERT OR IGNORE INTO versions (id, project_id, version_no, html, prompt) VALUES (?, ?, ?, ?, ?)')
           .bind(crypto.randomUUID(), job.project_id, next, html, prompt),
+        // 乐观锁:WHERE current_version = 预期值——若已被更新的版本推进(如用户重试后的新任务),本版本只留档不覆盖
         job.type === 'generate' && plan
           ? db
               .prepare(
                 `UPDATE projects SET current_version = ?, updated_at = datetime('now'),
-                 name = COALESCE(?, name), description = COALESCE(?, description) WHERE id = ?`
+                 name = COALESCE(?, name), description = COALESCE(?, description)
+                 WHERE id = ? AND current_version = ?`
               )
-              .bind(next, plan.name, plan.tagline, job.project_id)
+              .bind(next, plan.name, plan.tagline, job.project_id, current.current_version)
           : db
-              .prepare(`UPDATE projects SET current_version = ?, updated_at = datetime('now') WHERE id = ?`)
-              .bind(next, job.project_id),
+              .prepare(`UPDATE projects SET current_version = ?, updated_at = datetime('now') WHERE id = ? AND current_version = ?`)
+              .bind(next, job.project_id, current.current_version),
       ])
       return next
     })
     log(`version v${version} committed`)
 
-    // 收尾:先守卫式落定任务状态(幂等认领),成功者才补消息与扣积分
+    // 收尾:守卫式落定任务状态(幂等认领;被兜底判死但实例最终成功的行允许复活以交付页面),成功者才补消息与扣积分
     await step.do('finalize', async () => {
       const claim = await db
         .prepare(
-          `UPDATE jobs SET status = 'succeeded', result_version = ?, updated_at = datetime('now')
-           WHERE id = ? AND status = 'running'`
+          `UPDATE jobs SET status = 'succeeded', result_version = ?, error = NULL, updated_at = datetime('now')
+           WHERE id = ? AND status IN ('running','failed')`
         )
         .bind(version, jobId)
         .run()
