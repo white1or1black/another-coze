@@ -81,7 +81,7 @@ export class GenerationWorkflow extends WorkflowEntrypoint<Env, GenerationParams
       })
       log(`planning done: ${genPlan.name}, ${genPlan.sections.length} sections`)
 
-      // 阶段 2:骨架(完整文档,正文仅含章节占位符)
+      // 阶段 2:骨架(完整文档,正文仅含计划项占位符)。完成即写 html_preview,预览立刻能看到页面框架
       const shell = await step.do(
         'shell',
         { retries: LLM_STEP_RETRIES },
@@ -94,6 +94,10 @@ export class GenerationWorkflow extends WorkflowEntrypoint<Env, GenerationParams
           if (!doc.includes('<') || missing.length) {
             throw new Error(`页面骨架生成无效(缺少内容占位符),请重试`)
           }
+          await db
+            .prepare(`UPDATE jobs SET html_preview = ?, updated_at = datetime('now') WHERE id = ?`)
+            .bind(doc, jobId)
+            .run()
           return doc
         },
       )
@@ -112,14 +116,19 @@ export class GenerationWorkflow extends WorkflowEntrypoint<Env, GenerationParams
             await setProgress(`正在生成「${sections[i].title}」(${i + 1}/${sections.length})`)
             const out = stripFence(await chatOnce(this.env, sectionMessages(prompt, genPlan, i), SEGMENT_TIMEOUT_MS))
             if (!out.includes('<')) throw new Error(`「${sections[i].title}」未返回有效内容,请重试`)
-            // 勾选计划卡片:该项标记完成,前端经轮询/SSE 实时渲染 ✓
+            // 勾选计划卡片 + 半成品页面上屏:该项标记完成,已完成的片段拼进 html_preview
+            const htmlSoFar = [...filled, out].reduce(
+              (acc, s, j) => acc.replace(sectionPlaceholder(j), `\n${s}\n`),
+              shell,
+            )
             await db
-              .prepare(`UPDATE jobs SET plan_json = ?, updated_at = datetime('now') WHERE id = ?`)
+              .prepare(`UPDATE jobs SET plan_json = ?, html_preview = ?, updated_at = datetime('now') WHERE id = ?`)
               .bind(
                 JSON.stringify({
                   ...genPlan,
                   sections: genPlan.sections.map((s, j) => (j <= i ? { ...s, done: true } : s)),
                 }),
+                htmlSoFar,
                 jobId,
               )
               .run()

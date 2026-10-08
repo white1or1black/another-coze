@@ -20,7 +20,8 @@ export async function insertMessage(
     .run()
 }
 
-const SNAPSHOT_COLUMNS = 'id, user_id, type, status, stage, progress, plan_json, error, result_version, started_at'
+const SNAPSHOT_COLUMNS =
+  'id, user_id, type, status, stage, progress, html_preview, plan_json, error, result_version, started_at'
 
 interface SnapshotRow {
   id: string
@@ -29,6 +30,7 @@ interface SnapshotRow {
   status: string
   stage: string
   progress: string | null
+  html_preview: string | null
   plan_json: string | null
   error: string | null
   result_version: number | null
@@ -42,6 +44,7 @@ function snapshotFromRow(row: SnapshotRow) {
     status: row.status,
     stage: row.stage,
     progress: row.progress,
+    html_preview: row.html_preview,
     plan: row.plan_json ? (JSON.parse(row.plan_json) as unknown) : null,
     error: row.error,
     version: row.result_version,

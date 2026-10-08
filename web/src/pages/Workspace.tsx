@@ -81,6 +81,7 @@ export default function Workspace() {
           status: 'pending',
           stage: 'planning',
           progress: null,
+          html_preview: null,
           plan: null,
           error: null,
           version: null,
@@ -101,6 +102,8 @@ export default function Workspace() {
     const apply = (next: JobSnapshot) => {
       setJob(next)
       if (next.plan) setPlan(next.plan)
+      // 分段实时预览:骨架完成即可见框架,每个计划项完成时长出对应部分
+      if (next.html_preview) setHtml(next.html_preview)
       if (next.status === 'succeeded' || next.status === 'failed') void settle(next)
     }
     // 进度彻底拿不到(会话过期/持续断网):结束任务态并提示,避免输入被永久禁用
@@ -138,6 +141,7 @@ export default function Workspace() {
         if (active) {
           setJob(active)
           if (active.plan) setPlan(active.plan)
+          if (active.html_preview) setHtml(active.html_preview)
           return
         }
         const idea = sp.get('idea')

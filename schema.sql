@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   stage          TEXT NOT NULL DEFAULT 'planning', -- planning | coding
   progress       TEXT,                      -- 人读的分段进度(工作流各 step 写入,如「正在生成章节 2/4」)
   plan_json      TEXT,
+  html_preview   TEXT,                      -- 生成中的半成品页面(骨架+已完成计划项),前端实时预览
   error          TEXT,
   result_version INTEGER,
   started_at     TEXT,
