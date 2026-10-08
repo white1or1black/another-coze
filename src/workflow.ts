@@ -99,23 +99,25 @@ export class GenerationWorkflow extends WorkflowEntrypoint<Env, GenerationParams
       )
       log('shell done')
 
-      // 阶段 3:各章节正文,并行生成(每个章节独立 checkpoint,任一失败只重试该章节)
+      // 阶段 3:各章节正文,顺序生成。实测同一 key 的并发请求会被网关排队(越靠后越久,
+      // 第 4 个并行请求被饿到 17 分钟超时),串行反而更快更稳;每个章节独立 checkpoint,
+      // 任一失败只重试该章节,进度也能精确到「第几章」
       const sections = genPlan.sections.slice(0, MAX_SEGMENTS)
-      const sectionProgress = `正在并行生成 ${sections.length} 个章节`
-      const filled = await Promise.all(
-        sections.map((_, i) =>
-          step.do(
-            `section-${i}`,
-            { retries: LLM_STEP_RETRIES },
-            async () => {
-              await setProgress(sectionProgress)
-              const seg = stripFence(await chatOnce(this.env, sectionMessages(prompt, genPlan, i), SEGMENT_TIMEOUT_MS))
-              if (!seg.includes('<')) throw new Error(`章节 ${i} 未返回有效 HTML`)
-              return seg
-            },
-          ),
-        ),
-      )
+      const filled: string[] = []
+      for (let i = 0; i < sections.length; i++) {
+        const seg = await step.do(
+          `section-${i}`,
+          { retries: LLM_STEP_RETRIES },
+          async () => {
+            await setProgress(`正在生成章节 ${i + 1}/${sections.length}:${sections[i].title}`)
+            const out = stripFence(await chatOnce(this.env, sectionMessages(prompt, genPlan, i), SEGMENT_TIMEOUT_MS))
+            if (!out.includes('<')) throw new Error(`章节 ${i} 未返回有效 HTML`)
+            return out
+          },
+        )
+        filled.push(seg)
+        log(`section-${i} done`)
+      }
       log(`sections done: ${filled.length}`)
 
       // 组装:章节片段替换进骨架占位符

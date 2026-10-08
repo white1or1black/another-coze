@@ -9,7 +9,7 @@ export function planMessages(idea: string): ChatMessage[] {
       content: `你是一位资深产品规划师。用户会给出一个网站想法,你输出一份简洁的建站规划。
 严格输出如下 JSON,不要输出 JSON 以外的任何文字,不要使用代码块:
 {"name":"网站名,10字以内","tagline":"一句话定位","palette":["#主色","#辅色","#强调色","#文字色"],"sections":[{"title":"章节标题","summary":"该章节内容简述"}]}
-要求:sections 为 3-6 个;palette 提供 3-4 个和谐的 hex 颜色;全程使用简体中文。`,
+要求:sections 为 3-5 个;palette 提供 3-4 个和谐的 hex 颜色;全程使用简体中文。`,
     },
     { role: 'user', content: `网站想法:${idea}` },
   ]
