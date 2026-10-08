@@ -12,7 +12,7 @@ interface Props {
 }
 
 export default function PreviewPane({ html, streaming, progressText, project, onPublish }: Props) {
-  const [tab, setTab] = useState<'preview' | 'code' | 'data'>('preview')
+  const [tab, setTab] = useState<'preview' | 'data'>('preview')
   const [device, setDevice] = useState<'desktop' | 'mobile'>('desktop')
   const published = project?.status === 'published'
   const publicUrl = project ? `${location.origin}/s/${project.slug}` : ''
@@ -25,7 +25,7 @@ export default function PreviewPane({ html, streaming, progressText, project, on
     <section className="flex min-w-0 flex-1 flex-col bg-gray-900">
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-gray-800 px-3">
         <div className="flex gap-1">
-          {(['preview', 'code', 'data'] as const).map((t) => (
+          {(['preview', 'data'] as const).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -33,7 +33,7 @@ export default function PreviewPane({ html, streaming, progressText, project, on
                 tab === t ? 'bg-gray-800 text-white' : 'text-gray-400 hover:text-gray-200'
               }`}
             >
-              {t === 'preview' ? '预览' : t === 'code' ? '代码' : '数据'}
+              {t === 'preview' ? '预览' : '数据'}
             </button>
           ))}
         </div>
@@ -76,7 +76,7 @@ export default function PreviewPane({ html, streaming, progressText, project, on
           project ? (
             <DataPanel projectId={project.id} />
           ) : null
-        ) : tab === 'preview' ? (
+        ) : (
           <div className={`mx-auto h-full ${device === 'mobile' ? 'w-[390px]' : 'w-full'}`}>
             {previewHtml ? (
               <iframe
@@ -101,10 +101,6 @@ export default function PreviewPane({ html, streaming, progressText, project, on
               </div>
             )}
           </div>
-        ) : (
-          <pre className="h-full min-h-[400px] overflow-auto rounded-xl bg-gray-950 p-4 font-mono text-xs leading-5 text-emerald-300">
-            {html ?? '// 暂无代码'}
-          </pre>
         )}
       </div>
     </section>
